@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+title: "UK and US Tracking on Domestic Violence Support Websites"
+message: "Citation metadata for this work."
+type: software
+authors:
+  - given-names: "Wm. Josid"
+    family-names: "Ridolfo"
+    email: "josid.ridolfo@gmail.com"
+repository-code: "https://github.com/josidridolfo/uk-us-dv-support-tracking"
+version: "0.1.0"
+date-released: "2026-06-23"
+license: MIT
+keywords:
+  - "web-measurement"
+  - "privacy"
+  - "tracking"
+  - "GDPR"
+  - "cookies"
+  - "consent"
+  - "domestic-violence"
+  - "vulnerable-populations"
+  - "applied-privacy-research"
+abstract: >-
+  A small-scale comparison of pre-consent third-party tracking on
+  domestic violence support websites in the United Kingdom and the
+  United States. Methodology: ~50 UK and ~50 US sites; aggregate
+  descriptive comparison by jurisdiction; three trials per cell; headful
+  Chromium via Playwright; residential-IP VPN exits; tracker
+  classification against pinned snapshots of DuckDuckGo Tracker Radar
+  and EasyPrivacy.
