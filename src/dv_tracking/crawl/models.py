@@ -63,3 +63,33 @@ class RawCookie:
             cookie: The raw cookie record.
         """
         return cls(**keep_known_fields(cls, mapping))
+
+
+@dataclass(frozen=True)
+class RawTrial:
+    """The raw result of crawling one site at one geolocation."""
+
+    site_id: str
+    url: str
+    geolocation: str
+    trial: int
+    navigation_status: int | None
+    navigation_error: str | None
+    blocked: bool
+    requests: tuple[RawRequest, ...]
+    crawl_start_utc: str
+    crawl_end_utc: str
+
+    @classmethod
+    def from_dict(cls, mapping: dict) -> RawTrial:
+        """
+        Build a raw trial from a decoded JSON object with embedded records.
+
+        Args:
+            mapping: The decoded trial record; unknown keys are dropped.
+        Returns:
+            trial: The raw trial record.
+        """
+        fields = keep_known_fields(cls, mapping)
+        fields["requests"] = tuple(RawRequest.from_dict(row) for row in mapping.get("requests", ()))
+        return cls(**fields)
