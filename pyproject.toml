@@ -26,7 +26,10 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Browsers",
     "Topic :: Scientific/Engineering",
 ]
-dependencies = []
+dependencies = [
+    "playwright>=1.40",
+    "tldextract>=5.0",
+]
 
 [project.optional-dependencies]
 dev = [

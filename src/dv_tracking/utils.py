@@ -10,6 +10,35 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import tldextract
+
+EXTRACT: tldextract.TLDExtract = tldextract.TLDExtract(suffix_list_urls=())
+
+
+def registered_domain_for_host(host: str) -> str:
+    """
+    Registered domain of a host under the pinned public suffix list.
+
+    Args:
+        host: The request host or cookie domain.
+    Returns:
+        registered_domain: The registered domain, or the bare host when no suffix is known.
+    """
+    return EXTRACT(host).top_domain_under_public_suffix or host
+
+
+def is_third_party_to_origin(registered_domain: str, page_origin_domain: str) -> bool:
+    """
+    Whether a registered domain differs from the visited page's origin domain.
+
+    Args:
+        registered_domain: The record's registered domain.
+        page_origin_domain: The visited page's registered domain.
+    Returns:
+        third_party: True when the registered domain is non-empty and differs from the origin.
+    """
+    return registered_domain != page_origin_domain and registered_domain != ""
+
 
 def utcnow_iso() -> str:
     """
