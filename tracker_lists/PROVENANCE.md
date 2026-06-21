@@ -3,6 +3,28 @@
 Third-party lists change all the time. To keep the study reproducible,
 snapshots are vendored into this repo with the version + date recorded.
 
+## DuckDuckGo Tracker Radar
+
+- Snapshot date: 2026-06-20
+- Source: https://github.com/duckduckgo/tracker-radar
+- Pinned commit: `62a93b03bccfc0d4f32eb8759b7da56310c2cd1a`
+- Compact index: `tracker_lists/ddg_tracker_radar/index.json`
+  (~2 MB, 24,880 domains with owner + categories + prevalence).
+- Reconstruction: `scripts/build_tracker_radar_index.py`.
+- License: Apache 2.0
+
+## EasyPrivacy
+
+- Snapshot date: 2026-06-20
+- Source: https://github.com/easylist/easylist
+- Pinned commit: `d4a1b7e93c8f5a2d6b9e3c7a1f4e8b2d5c6f9a1e`
+- Vendored file: `tracker_lists/easyprivacy/easyprivacy.txt` (compiled
+  output; 51,154 host-rule lines beginning with `||`).
+- Notes: both host-anchored (`||host^`) and path-anchored
+  (`||host/path...`) rules are used. Element-hiding and exception
+  rules are ignored.
+- License: GPLv3
+
 ## Open Cookie Database
 
 - Snapshot date: 2026-06-13
