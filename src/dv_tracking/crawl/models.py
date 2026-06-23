@@ -8,7 +8,9 @@ visited page. Tracker classification belongs to the analysis stage.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from dv_tracking.utils import keep_known_fields
 
@@ -93,3 +95,45 @@ class RawTrial:
         fields = keep_known_fields(cls, mapping)
         fields["requests"] = tuple(RawRequest.from_dict(row) for row in mapping.get("requests", ()))
         return cls(**fields)
+
+
+@dataclass(frozen=True)
+class ConsentomaticBundle:
+    """The Consent-O-Matic rule identifiers loaded for a crawl."""
+
+    rules: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, mapping: dict) -> ConsentomaticBundle:
+        """
+        Build a Consent-O-Matic bundle from a decoded JSON object.
+
+        Args:
+            mapping: The decoded bundle record; unknown keys are dropped.
+        Returns:
+            bundle: The Consent-O-Matic rule bundle.
+        """
+        fields = keep_known_fields(cls, mapping)
+        if "rules" in fields:
+            fields["rules"] = tuple(fields["rules"])
+        return cls(**fields)
+
+    @classmethod
+    def from_rules_file(cls, path: Path) -> ConsentomaticBundle | None:
+        """
+        Read the Consent-O-Matic Rules.json and collect its rule identifiers.
+
+        Args:
+            path: Path to the Rules.json file, whose top-level keys name the rules.
+        Returns:
+            bundle: The rule-identifier bundle, or None when the file is absent or unreadable.
+        """
+        if not path.is_file():
+            return None
+        try:
+            rules = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(rules, dict):
+            return None
+        return cls(rules=tuple(sorted(rules)))
