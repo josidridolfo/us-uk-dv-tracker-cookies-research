@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import BrowserContext, Page, Request, sync_playwright
 
-from dv_tracking.crawl.models import RawRequest, RawTrial
+from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial
 from dv_tracking.sites import DVSupportSite
 from dv_tracking.utils import is_third_party_to_origin, registered_domain_for_host, utcnow_iso
 
@@ -195,6 +195,7 @@ class Crawler:
         navigation_status: int | None = None
         navigation_error: str | None = None
         blocked = False
+        cookies: tuple[RawCookie, ...] = ()
 
         crawl_start_utc = utcnow_iso()
         with self.page_factory(geolocation) as (context, page):
@@ -210,6 +211,12 @@ class Crawler:
 
             if not blocked:
                 time.sleep(WAIT_SECONDS_BY_TRIAL[trial - 1])
+                try:
+                    cookies = tuple(
+                        RawCookie.from_playwright(c, page_origin_domain) for c in context.cookies()
+                    )
+                except Exception:
+                    cookies = ()
         crawl_end_utc = utcnow_iso()
 
         return RawTrial(
@@ -221,6 +228,7 @@ class Crawler:
             navigation_error=navigation_error,
             blocked=blocked,
             requests=tuple(captured_requests),
+            cookies=cookies,
             crawl_start_utc=crawl_start_utc,
             crawl_end_utc=crawl_end_utc,
         )
