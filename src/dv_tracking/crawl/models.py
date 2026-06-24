@@ -206,6 +206,27 @@ class BannerSignals:
 
 
 @dataclass(frozen=True)
+class LocalStorageSnapshot:
+    """Aggregate stats for the visited page's first-party (top-origin) localStorage."""
+
+    key_count: int
+    total_bytes: int
+    error: str | None
+
+    @classmethod
+    def from_dict(cls, mapping: dict) -> LocalStorageSnapshot:
+        """
+        Builds a localStorage snapshot from a decoded JSON object.
+
+        Args:
+            mapping: The decoded snapshot record; unknown keys are dropped.
+        Returns:
+            snapshot: The localStorage snapshot.
+        """
+        return cls(**keep_known_fields(cls, mapping))
+
+
+@dataclass(frozen=True)
 class RawTrial:
     """The raw result of crawling one site at one geolocation."""
 
@@ -220,6 +241,7 @@ class RawTrial:
     cookies: tuple[RawCookie, ...]
     tcf_probe: TCFProbeResult | None
     banner_signals: BannerSignals | None
+    local_storage: LocalStorageSnapshot | None
     crawl_start_utc: str
     crawl_end_utc: str
 
@@ -241,6 +263,10 @@ class RawTrial:
         banner_signals = mapping.get("banner_signals")
         fields["banner_signals"] = (
             BannerSignals.from_dict(banner_signals) if banner_signals is not None else None
+        )
+        local_storage = mapping.get("local_storage")
+        fields["local_storage"] = (
+            LocalStorageSnapshot.from_dict(local_storage) if local_storage is not None else None
         )
         return cls(**fields)
 

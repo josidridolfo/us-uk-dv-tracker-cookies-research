@@ -22,6 +22,8 @@ from playwright.sync_api import BrowserContext, Page, Request, sync_playwright
 
 from dv_tracking.crawl.models import (
     BannerSignals,
+    ConsentomaticBundle,
+    LocalStorageSnapshot,
     RawCookie,
     RawRequest,
     RawTrial,
@@ -127,7 +129,39 @@ class PageProbes:
         # todo - build tcf field
         return None
 
-    def banner_signals(self, consentomatic_bundle: object | None) -> BannerSignals:
+    def local_storage(self) -> LocalStorageSnapshot:
+        """
+        Samples the visited page's first-party (top-origin) localStorage stats.
+
+        Args:
+            None
+        Returns:
+            snapshot: The localStorage key count and byte total, or an empty snapshot with error populated.
+        """
+        try:
+            result = self.page.evaluate(read_probe("local_storage.js"))
+        except Exception as error:
+            return LocalStorageSnapshot(
+                key_count=0, total_bytes=0, error=f"{type(error).__name__}: {error}"
+            )
+        if not isinstance(result, dict):
+            return LocalStorageSnapshot(
+                key_count=0, total_bytes=0, error=f"unexpected probe result: {type(result).__name__}"
+            )
+        if result.get("error"):
+            return LocalStorageSnapshot(key_count=0, total_bytes=0, error=str(result["error"]))
+        pairs = tuple(
+            (str(pair[0]), str(pair[1]))
+            for pair in (result.get("entries") or ())
+            if isinstance(pair, (list, tuple)) and len(pair) == 2
+        )
+        return LocalStorageSnapshot(
+            key_count=len(pairs),
+            total_bytes=sum(len(key) + len(value) for key, value in pairs),
+            error=None,
+        )
+
+    def banner_signals(self, consentomatic_bundle: ConsentomaticBundle | None) -> BannerSignals:
         """
         Run the DOM banner heuristic and report the DOM-derived signals.
 
@@ -138,6 +172,7 @@ class PageProbes:
         Returns:
             signals: The raw banner probe signals from the DOM heuristic.
         """
+        consentomatic_matches: tuple[str, ...] = ()
         dom_matched = False
         dom_evidence: str | None = None
         errors: list[str] = []
@@ -159,8 +194,16 @@ class PageProbes:
         except Exception as error:
             errors.append(f"dom_heuristic:{type(error).__name__}:{error}")
 
+        rule_identifiers = list(consentomatic_bundle.rules) if consentomatic_bundle else []
+        try:
+            result = self.page.evaluate(read_probe("consent_framework.js"), rule_identifiers)
+            if isinstance(result, dict):
+                consentomatic_matches = tuple(str(x) for x in result.get("cmp_matches") or ())
+        except Exception as error:
+            errors.append(f"consent_framework:{type(error).__name__}:{error}")
+
         return BannerSignals(
-            consentomatic_matches=(),
+            consentomatic_matches=consentomatic_matches,
             dom_heuristic_matched=dom_matched,
             dom_heuristic_evidence=dom_evidence,
             error="; ".join(errors) or None,
@@ -175,7 +218,7 @@ class Crawler:
         page_factory: Callable[[str], AbstractContextManager[tuple[BrowserContext, Page]]] | None = None,
         user_agent: str = DEFAULT_USER_AGENT,
         headless: bool = False,
-        consentomatic_bundle: object | None = None,
+        consentomatic_bundle: ConsentomaticBundle | None = None,
     ) -> None:
         """
         Configure the crawler and bind the page factory.
@@ -269,6 +312,7 @@ class Crawler:
         blocked = False
         cookies: tuple[RawCookie, ...] = ()
         tcf_probe: TCFProbeResult | None = None
+        local_storage: LocalStorageSnapshot | None = None
         banner_signals: BannerSignals | None = None
 
         crawl_start_utc = utcnow_iso()
@@ -293,6 +337,7 @@ class Crawler:
                     cookies = ()
                 probes = PageProbes(page)
                 tcf_probe = probes.tcf_probe(trial)
+                local_storage = probes.local_storage()
                 banner_signals = probes.banner_signals(self.consentomatic_bundle)
         crawl_end_utc = utcnow_iso()
 
@@ -307,6 +352,7 @@ class Crawler:
             requests=tuple(captured_requests),
             cookies=cookies,
             tcf_probe=tcf_probe,
+            local_storage=local_storage,
             banner_signals=banner_signals,
             crawl_start_utc=crawl_start_utc,
             crawl_end_utc=crawl_end_utc,
