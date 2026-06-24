@@ -156,6 +156,31 @@ class RawCookie:
 
 
 @dataclass(frozen=True)
+class TCFProbeResult:
+    """Outcome of probing the page for a TCF consent-management API."""
+
+    api_present: bool
+    gdpr_applies: bool | None
+    cmp_id: int | None
+    cmp_loaded: bool | None
+    cmp_status: str | None
+    display_status: str | None
+    tcf_policy_version: int | None
+
+    @classmethod
+    def from_dict(cls, mapping: dict) -> TCFProbeResult:
+        """
+        Builds a TCF probe result from a decoded JSON object.
+
+        Args:
+            mapping: The decoded probe record; unknown keys are dropped.
+        Returns:
+            probe: The TCF probe result.
+        """
+        return cls(**keep_known_fields(cls, mapping))
+
+
+@dataclass(frozen=True)
 class RawTrial:
     """The raw result of crawling one site at one geolocation."""
 
@@ -168,6 +193,7 @@ class RawTrial:
     blocked: bool
     requests: tuple[RawRequest, ...]
     cookies: tuple[RawCookie, ...]
+    tcf_probe: TCFProbeResult | None
     crawl_start_utc: str
     crawl_end_utc: str
 
@@ -184,6 +210,8 @@ class RawTrial:
         fields = keep_known_fields(cls, mapping)
         fields["requests"] = tuple(RawRequest.from_dict(row) for row in mapping.get("requests", ()))
         fields["cookies"] = tuple(RawCookie.from_dict(row) for row in mapping.get("cookies", ()))
+        tcf_probe = mapping.get("tcf_probe")
+        fields["tcf_probe"] = TCFProbeResult.from_dict(tcf_probe) if tcf_probe is not None else None
         return cls(**fields)
 
 

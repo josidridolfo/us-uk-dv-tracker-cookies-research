@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import BrowserContext, Page, Request, sync_playwright
 
-from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial
+from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial, TCFProbeResult
 from dv_tracking.sites import DVSupportSite
 from dv_tracking.utils import is_third_party_to_origin, registered_domain_for_host, utcnow_iso
 
@@ -93,6 +93,25 @@ def playwright_page_factory(
                 browser.close()
             except Exception:
                 pass
+
+
+class PageProbes:
+    """Runs the DOM/JS probes against one live page and returns raw probe records."""
+
+    def __init__(self, page: Page) -> None:
+        """
+        Bind the probes to a page.
+
+        Args:
+            page: The Playwright page to probe.
+        Returns:
+            None
+        """
+        self.page = page
+
+    def tcf_probe(self, trial: int) -> TCFProbeResult | None:
+        # todo - build tcf field
+        return None
 
 
 class Crawler:
@@ -196,6 +215,7 @@ class Crawler:
         navigation_error: str | None = None
         blocked = False
         cookies: tuple[RawCookie, ...] = ()
+        tcf_probe: TCFProbeResult | None = None
 
         crawl_start_utc = utcnow_iso()
         with self.page_factory(geolocation) as (context, page):
@@ -217,6 +237,8 @@ class Crawler:
                     )
                 except Exception:
                     cookies = ()
+                probes = PageProbes(page)
+                tcf_probe = probes.tcf_probe(trial)
         crawl_end_utc = utcnow_iso()
 
         return RawTrial(
@@ -229,6 +251,7 @@ class Crawler:
             blocked=blocked,
             requests=tuple(captured_requests),
             cookies=cookies,
+            tcf_probe=tcf_probe,
             crawl_start_utc=crawl_start_utc,
             crawl_end_utc=crawl_end_utc,
         )
