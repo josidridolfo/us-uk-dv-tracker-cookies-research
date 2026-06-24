@@ -20,7 +20,14 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import BrowserContext, Page, Request, sync_playwright
 
-from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial, TCFProbeResult
+from dv_tracking.crawl.models import (
+    BannerSignals,
+    RawCookie,
+    RawRequest,
+    RawTrial,
+    TCFProbeResult,
+)
+from dv_tracking.crawl.probes import read_probe
 from dv_tracking.sites import DVSupportSite
 from dv_tracking.utils import is_third_party_to_origin, registered_domain_for_host, utcnow_iso
 
@@ -37,6 +44,13 @@ DEFAULT_USER_AGENT: str = (
 
 # Post-load dwell before capture stops, indexed by trial (1, 2, 3).
 WAIT_SECONDS_BY_TRIAL: tuple[float, ...] = (5.0, 10.0, 15.0)
+
+DOM_HEURISTIC_KEYWORDS: tuple[str, ...] = (
+    "cookie", "cookies", "consent", "privacy", "gdpr", "ccpa",
+    "accept all", "reject all", "manage preferences", "tracking",
+)
+DOM_HEURISTIC_MINIMUM_Z_INDEX: int = 1
+DOM_HEURISTIC_EXCERPT_MAX_LENGTH: int = 200
 
 
 class BlockedNavigationError(Exception):
@@ -112,6 +126,45 @@ class PageProbes:
     def tcf_probe(self, trial: int) -> TCFProbeResult | None:
         # todo - build tcf field
         return None
+
+    def banner_signals(self, consentomatic_bundle: object | None) -> BannerSignals:
+        """
+        Run the DOM banner heuristic and report the DOM-derived signals.
+
+        Probe failure degrades to zeroed fields with error populated; never raises.
+
+        Args:
+            consentomatic_bundle: Reserved for the framework probe; unused at this stage.
+        Returns:
+            signals: The raw banner probe signals from the DOM heuristic.
+        """
+        dom_matched = False
+        dom_evidence: str | None = None
+        errors: list[str] = []
+
+        try:
+            result = self.page.evaluate(
+                read_probe("dom_heuristic.js"),
+                {
+                    "zIndexMin": DOM_HEURISTIC_MINIMUM_Z_INDEX,
+                    "keywords": list(DOM_HEURISTIC_KEYWORDS),
+                    "excerptMax": DOM_HEURISTIC_EXCERPT_MAX_LENGTH,
+                },
+            )
+            if isinstance(result, dict):
+                dom_matched = bool(result.get("matched"))
+                dom_evidence = (
+                    str(result.get("evidence") or "")[:DOM_HEURISTIC_EXCERPT_MAX_LENGTH] or None
+                )
+        except Exception as error:
+            errors.append(f"dom_heuristic:{type(error).__name__}:{error}")
+
+        return BannerSignals(
+            consentomatic_matches=(),
+            dom_heuristic_matched=dom_matched,
+            dom_heuristic_evidence=dom_evidence,
+            error="; ".join(errors) or None,
+        )
 
 
 class Crawler:
@@ -216,6 +269,7 @@ class Crawler:
         blocked = False
         cookies: tuple[RawCookie, ...] = ()
         tcf_probe: TCFProbeResult | None = None
+        banner_signals: BannerSignals | None = None
 
         crawl_start_utc = utcnow_iso()
         with self.page_factory(geolocation) as (context, page):
@@ -239,6 +293,7 @@ class Crawler:
                     cookies = ()
                 probes = PageProbes(page)
                 tcf_probe = probes.tcf_probe(trial)
+                banner_signals = probes.banner_signals(self.consentomatic_bundle)
         crawl_end_utc = utcnow_iso()
 
         return RawTrial(
@@ -252,6 +307,7 @@ class Crawler:
             requests=tuple(captured_requests),
             cookies=cookies,
             tcf_probe=tcf_probe,
+            banner_signals=banner_signals,
             crawl_start_utc=crawl_start_utc,
             crawl_end_utc=crawl_end_utc,
         )

@@ -181,6 +181,31 @@ class TCFProbeResult:
 
 
 @dataclass(frozen=True)
+class BannerSignals:
+    """Raw DOM and JS-API probe outputs for consent-banner detection."""
+
+    consentomatic_matches: tuple[str, ...]
+    dom_heuristic_matched: bool
+    dom_heuristic_evidence: str | None
+    error: str | None
+
+    @classmethod
+    def from_dict(cls, mapping: dict) -> BannerSignals:
+        """
+        Builds banner signals from a decoded JSON object.
+
+        Args:
+            mapping: The decoded signals record; unknown keys are dropped.
+        Returns:
+            signals: The banner probe signals.
+        """
+        fields = keep_known_fields(cls, mapping)
+        if "consentomatic_matches" in fields:
+            fields["consentomatic_matches"] = tuple(fields["consentomatic_matches"])
+        return cls(**fields)
+
+
+@dataclass(frozen=True)
 class RawTrial:
     """The raw result of crawling one site at one geolocation."""
 
@@ -194,6 +219,7 @@ class RawTrial:
     requests: tuple[RawRequest, ...]
     cookies: tuple[RawCookie, ...]
     tcf_probe: TCFProbeResult | None
+    banner_signals: BannerSignals | None
     crawl_start_utc: str
     crawl_end_utc: str
 
@@ -212,6 +238,10 @@ class RawTrial:
         fields["cookies"] = tuple(RawCookie.from_dict(row) for row in mapping.get("cookies", ()))
         tcf_probe = mapping.get("tcf_probe")
         fields["tcf_probe"] = TCFProbeResult.from_dict(tcf_probe) if tcf_probe is not None else None
+        banner_signals = mapping.get("banner_signals")
+        fields["banner_signals"] = (
+            BannerSignals.from_dict(banner_signals) if banner_signals is not None else None
+        )
         return cls(**fields)
 
 
