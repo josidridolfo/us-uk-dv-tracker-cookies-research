@@ -17,6 +17,7 @@ from pathlib import Path
 from dv_tracking.utils import (
     is_third_party_to_origin,
     keep_known_fields,
+    read_jsonl,
     registered_domain_for_host,
 )
 
@@ -269,6 +270,49 @@ class RawTrial:
             LocalStorageSnapshot.from_dict(local_storage) if local_storage is not None else None
         )
         return cls(**fields)
+
+    @classmethod
+    def from_disk(cls, trial_dir: Path) -> RawTrial | None:
+        """
+        Rebuild a raw trial from its saved metadata and request/cookie traces.
+
+        Args:
+            trial_dir: The trial directory holding metadata.json, requests.jsonl and cookies.jsonl.
+        Returns:
+            trial: The rebuilt raw trial, or None when metadata is absent or unreadable.
+        """
+        metadata_file = trial_dir / "metadata.json"
+        if not metadata_file.is_file():
+            return None
+        try:
+            metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        requests = read_jsonl(trial_dir / "requests.jsonl", RawRequest.from_dict)
+        cookies = read_jsonl(trial_dir / "cookies.jsonl", RawCookie.from_dict)
+        tcf_probe = metadata.get("tcf_probe")
+        local_storage = metadata.get("local_storage")
+        banner_signals = metadata.get("banner_signals")
+        return cls(
+            site_id=metadata["site_id"],
+            url=metadata["url"],
+            geolocation=metadata["geolocation"],
+            trial=metadata["trial"],
+            navigation_status=metadata.get("navigation_status"),
+            navigation_error=metadata.get("navigation_error"),
+            blocked=metadata.get("blocked", False),
+            requests=tuple(requests),
+            cookies=tuple(cookies),
+            tcf_probe=TCFProbeResult.from_dict(tcf_probe) if tcf_probe is not None else None,
+            banner_signals=(
+                BannerSignals.from_dict(banner_signals) if banner_signals is not None else None
+            ),
+            local_storage=(
+                LocalStorageSnapshot.from_dict(local_storage) if local_storage is not None else None
+            ),
+            crawl_start_utc=metadata["crawl_start_utc"],
+            crawl_end_utc=metadata["crawl_end_utc"],
+        )
 
 
 @dataclass(frozen=True)
