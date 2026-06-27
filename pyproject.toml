@@ -28,6 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "playwright>=1.40",
+    "duckdb>=0.10",
     "tldextract>=5.0",
 ]
 
