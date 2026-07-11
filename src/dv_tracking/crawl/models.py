@@ -9,9 +9,7 @@ visited page. Tracker classification belongs to the analysis stage.
 from __future__ import annotations
 
 import json
-from collections import Counter
 from dataclasses import dataclass
-from math import log2
 from pathlib import Path
 
 from dv_tracking.utils import (
@@ -48,9 +46,10 @@ class RawRequest:
 
 @dataclass(frozen=True)
 class RawCookie:
-    """A single cookie observed during the crawl, kept as a value-entropy surrogate."""
+    """A single cookie observed during the crawl, captured with its value."""
 
     name: str
+    value: str
     domain: str
     registered_domain: str
     path: str
@@ -60,54 +59,6 @@ class RawCookie:
     is_http_only: bool
     same_site: str
     is_third_party: bool
-    value_shape: str
-    value_entropy_bits: float
-    value_length: int
-
-    @staticmethod
-    def convert_cookie_value_to_entropy_bits(value: str) -> float:
-        """
-        Shannon entropy of the value's character distribution, in bits.
-
-        Args:
-            value: The cookie value to measure.
-        Returns:
-            bits: The Shannon entropy in bits; 0.0 for an empty value.
-        """
-        if not value:
-            return 0.0
-        counts = Counter(value)
-        total = len(value)
-        return -sum((count / total) * log2(count / total) for count in counts.values())
-
-    @staticmethod
-    def classify_cookie_value_shape(value: str) -> str:
-        """
-        Coarse structural label for a cookie value; no raw value is retained.
-
-        Args:
-            value: The cookie value to classify.
-        Returns:
-            shape: One of uuid, ulid, hex, base64, dotted_id, numeric, short, empty, other.
-        """
-        if not value:
-            return "empty"
-        if len(value) < 6:
-            return "short"
-        if len(value) == 36 and value.count("-") == 4:
-            return "uuid"
-        if len(value) == 26 and value.isalnum() and value.isupper():
-            return "ulid"
-        if value.count(".") >= 2 and any(char.isdigit() for char in value):
-            return "dotted_id"
-        # hex precedes numeric to match the crawler ladder: long all-digit ids read as hex.
-        if len(value) >= 8 and all(char in "0123456789abcdefABCDEF" for char in value):
-            return "hex"
-        if len(value) >= 12 and all(char.isalnum() or char in "+/=_-" for char in value):
-            return "base64"
-        if value.isdigit():
-            return "numeric"
-        return "other"
 
     @classmethod
     def from_dict(cls, mapping: dict) -> RawCookie:
@@ -124,23 +75,23 @@ class RawCookie:
     @classmethod
     def from_playwright(cls, raw: dict, page_origin_domain: str) -> RawCookie:
         """
-        Map a Playwright cookie dict to a RawCookie, keeping a value-entropy surrogate.
+        Map a Playwright cookie dict to a RawCookie, storing its value and party.
 
         Args:
             raw: One cookie dict as returned by BrowserContext.cookies().
             page_origin_domain: The visited page's registered domain.
         Returns:
-            cookie: The raw cookie carrying its party and value surrogate.
+            cookie: The raw cookie carrying its party and value.
         """
         expires = raw.get("expires", -1.0)
         if expires is None:
             expires = -1.0
         expires = float(expires)
         domain = (raw.get("domain") or "").lstrip(".")
-        value = raw.get("value", "")
         registered_domain = registered_domain_for_host(domain)
         return cls(
             name=raw.get("name", ""),
+            value=raw.get("value", ""),
             domain=domain,
             registered_domain=registered_domain,
             path=raw.get("path", "/"),
@@ -150,9 +101,6 @@ class RawCookie:
             is_http_only=bool(raw.get("httpOnly", False)),
             same_site=str(raw.get("sameSite") or "Unspecified"),
             is_third_party=is_third_party_to_origin(registered_domain, page_origin_domain),
-            value_shape=cls.classify_cookie_value_shape(value),
-            value_entropy_bits=cls.convert_cookie_value_to_entropy_bits(value),
-            value_length=len(value),
         )
 
 

@@ -34,8 +34,9 @@ CATEGORY_MAP: dict[str, str] = {
     "Preferences": "preferences",
 }
 
-# Value shapes the crawler labels as encoded visitor identifiers.
-IDENTIFIER_VALUE_SHAPES: tuple[str, ...] = ("uuid", "ulid", "hex", "base64", "dotted_id")
+# An identifier-like value: long enough, not purely numeric, with real variety.
+MINIMUM_IDENTIFIER_LENGTH: int = 8
+MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
 
 
 def compile_cookie_pattern(name: str) -> re.Pattern[str] | None:
@@ -62,11 +63,15 @@ def is_identifier_like(cookie: RawCookie) -> bool:
     Whether a cookie value looks like an encoded visitor identifier.
 
     Args:
-        cookie: The raw cookie carrying its value-shape surrogate.
+        cookie: The raw cookie carrying its value.
     Returns:
-        identifier_like: True when the value's shape is an identifier shape.
+        identifier_like: True when the value is long, non-numeric, and varied.
     """
-    return cookie.value_shape in IDENTIFIER_VALUE_SHAPES
+    return (
+        len(cookie.value) >= MINIMUM_IDENTIFIER_LENGTH
+        and not cookie.value.isdigit()
+        and len(set(cookie.value)) >= MINIMUM_IDENTIFIER_DISTINCT_CHARS
+    )
 
 
 @dataclass(frozen=True)
