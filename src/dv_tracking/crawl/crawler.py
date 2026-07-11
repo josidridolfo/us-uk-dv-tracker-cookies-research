@@ -136,26 +136,32 @@ class PageProbes:
         Args:
             None
         Returns:
-            snapshot: The localStorage key count and byte total, or an empty snapshot with error populated.
+            snapshot: The localStorage entries with their key count and byte total, or an empty snapshot with error populated.
         """
         try:
             result = self.page.evaluate(read_probe("local_storage.js"))
         except Exception as error:
             return LocalStorageSnapshot(
-                key_count=0, total_bytes=0, error=f"{type(error).__name__}: {error}"
+                entries=(), key_count=0, total_bytes=0, error=f"{type(error).__name__}: {error}"
             )
         if not isinstance(result, dict):
             return LocalStorageSnapshot(
-                key_count=0, total_bytes=0, error=f"unexpected probe result: {type(result).__name__}"
+                entries=(),
+                key_count=0,
+                total_bytes=0,
+                error=f"unexpected probe result: {type(result).__name__}",
             )
         if result.get("error"):
-            return LocalStorageSnapshot(key_count=0, total_bytes=0, error=str(result["error"]))
+            return LocalStorageSnapshot(
+                entries=(), key_count=0, total_bytes=0, error=str(result["error"])
+            )
         pairs = tuple(
             (str(pair[0]), str(pair[1]))
             for pair in (result.get("entries") or ())
             if isinstance(pair, (list, tuple)) and len(pair) == 2
         )
         return LocalStorageSnapshot(
+            entries=pairs,
             key_count=len(pairs),
             total_bytes=sum(len(key) + len(value) for key, value in pairs),
             error=None,

@@ -156,8 +156,9 @@ class BannerSignals:
 
 @dataclass(frozen=True)
 class LocalStorageSnapshot:
-    """Aggregate stats for the visited page's first-party (top-origin) localStorage."""
+    """The visited page's first-party (top-origin) localStorage entries and aggregate stats."""
 
+    entries: tuple[tuple[str, str], ...]
     key_count: int
     total_bytes: int
     error: str | None
@@ -172,7 +173,10 @@ class LocalStorageSnapshot:
         Returns:
             snapshot: The localStorage snapshot.
         """
-        return cls(**keep_known_fields(cls, mapping))
+        fields = keep_known_fields(cls, mapping)
+        if "entries" in fields:
+            fields["entries"] = tuple(tuple(entry) for entry in fields["entries"])
+        return cls(**fields)
 
 
 @dataclass(frozen=True)
