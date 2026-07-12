@@ -115,6 +115,62 @@ class CookieRule:
 
 
 @dataclass(frozen=True)
+class CookieClassification:
+    """Classification outcome for one cookie name."""
+
+    matched: bool
+    rule: CookieRule | None
+
+    @property
+    def category(self) -> str:
+        """
+        The normalised category, or "unknown" when no rule matched.
+
+        Args:
+            None
+        Returns:
+            category: The normalised category label.
+        """
+        return self.rule.normalised_category if self.rule is not None else "unknown"
+
+    @property
+    def vendor(self) -> str:
+        """
+        The vendor/platform of the matched rule, or empty when none matched.
+
+        Args:
+            None
+        Returns:
+            vendor: The vendor label.
+        """
+        return self.rule.vendor if self.rule is not None else ""
+
+    @property
+    def is_strictly_necessary(self) -> bool:
+        """
+        Whether the cookie is strictly necessary.
+
+        Args:
+            None
+        Returns:
+            strictly_necessary: True when the category is strictly_necessary.
+        """
+        return self.category == "strictly_necessary"
+
+    @property
+    def is_eprivacy_5_3_candidate(self) -> bool:
+        """
+        Whether a pre-consent match breaches ePrivacy Article 5(3).
+
+        Args:
+            None
+        Returns:
+            candidate: True when a matched cookie is analytics or marketing.
+        """
+        return self.matched and self.category in ("analytics", "marketing")
+
+
+@dataclass(frozen=True)
 class CookieDatabase:
     """In-memory cookie classifier backed by the Open Cookie Database."""
 
@@ -147,21 +203,21 @@ class CookieDatabase:
                     exact[rule.name_or_pattern] = rule
         return cls(snapshot_path=path, exact_rules=exact, wildcard_rules=tuple(wildcards))
 
-    def classify(self, cookie: RawCookie) -> CookieRule | None:
+    def classify(self, cookie: RawCookie) -> CookieClassification:
         """
         Classify a cookie against the exact then wildcard rules.
 
         Args:
             cookie: The observed raw cookie.
         Returns:
-            rule: The matched rule, or None when no rule fits.
+            classification: The classification; matched is False when no rule fits.
         """
         if not cookie.name:
-            return None
+            return CookieClassification(matched=False, rule=None)
         rule = self.exact_rules.get(cookie.name)
         if rule is not None:
-            return rule
+            return CookieClassification(matched=True, rule=rule)
         for wildcard in self.wildcard_rules:
             if wildcard.pattern is not None and wildcard.pattern.fullmatch(cookie.name):
-                return wildcard
-        return None
+                return CookieClassification(matched=True, rule=wildcard)
+        return CookieClassification(matched=False, rule=None)
