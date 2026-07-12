@@ -14,8 +14,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from dv_tracking.crawl.models import RawCookie
-
 COOKIE_CATEGORIES: tuple[str, ...] = (
     "strictly_necessary",
     "functional",
@@ -33,26 +31,6 @@ CATEGORY_MAP: dict[str, str] = {
     "Marketing": "marketing",
     "Preferences": "preferences",
 }
-
-# An identifier-like value: long enough, not purely numeric, with real variety.
-MINIMUM_IDENTIFIER_LENGTH: int = 8
-MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
-
-
-def is_identifier_like(cookie: RawCookie) -> bool:
-    """
-    Whether a cookie value looks like an encoded visitor identifier.
-
-    Args:
-        cookie: The raw cookie carrying its value.
-    Returns:
-        identifier_like: True when the value is long, non-numeric, and varied.
-    """
-    return (
-        len(cookie.value) >= MINIMUM_IDENTIFIER_LENGTH
-        and not cookie.value.isdigit()
-        and len(set(cookie.value)) >= MINIMUM_IDENTIFIER_DISTINCT_CHARS
-    )
 
 
 @dataclass(frozen=True)
@@ -203,21 +181,21 @@ class CookieDatabase:
                     exact[rule.name_or_pattern] = rule
         return cls(snapshot_path=path, exact_rules=exact, wildcard_rules=tuple(wildcards))
 
-    def classify(self, cookie: RawCookie) -> CookieClassification:
+    def classify(self, cookie_name: str) -> CookieClassification:
         """
-        Classify a cookie against the exact then wildcard rules.
+        Classify a cookie name against the exact then wildcard rules.
 
         Args:
-            cookie: The observed raw cookie.
+            cookie_name: The observed cookie name.
         Returns:
             classification: The classification; matched is False when no rule fits.
         """
-        if not cookie.name:
+        if not cookie_name:
             return CookieClassification(matched=False, rule=None)
-        rule = self.exact_rules.get(cookie.name)
+        rule = self.exact_rules.get(cookie_name)
         if rule is not None:
             return CookieClassification(matched=True, rule=rule)
         for wildcard in self.wildcard_rules:
-            if wildcard.pattern is not None and wildcard.pattern.fullmatch(cookie.name):
+            if wildcard.pattern is not None and wildcard.pattern.fullmatch(cookie_name):
                 return CookieClassification(matched=True, rule=wildcard)
         return CookieClassification(matched=False, rule=None)
