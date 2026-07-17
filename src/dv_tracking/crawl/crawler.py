@@ -13,8 +13,10 @@ analysis stage.
 
 from __future__ import annotations
 
+import os
+import secrets
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from urllib.parse import urlparse
 
@@ -54,6 +56,13 @@ DOM_HEURISTIC_KEYWORDS: tuple[str, ...] = (
 DOM_HEURISTIC_MINIMUM_Z_INDEX: int = 1
 DOM_HEURISTIC_EXCERPT_MAX_LENGTH: int = 200
 
+# IPRoyal residential-proxy exit: crawls route through the country residential exit
+# unless the machine already exits residentially in-country (see README/vpn gate).
+IPROYAL_DEFAULT_HOST: str = "geo.iproyal.com"
+IPROYAL_DEFAULT_PORT: str = "12321"
+IPROYAL_SESSION_LIFETIME: str = "10m"
+IPROYAL_COUNTRY_BY_GEOLOCATION: dict[str, str] = {"uk": "gb", "us": "us"}
+
 
 class BlockedNavigationError(Exception):
     """Raised when navigation returns a blocked HTTP status; blocked loads are not retried."""
@@ -71,9 +80,92 @@ class BlockedNavigationError(Exception):
         self.status = status
 
 
+class ProxyConfigurationError(Exception):
+    """Raised when the IPRoyal exit credentials or configuration are missing or incomplete."""
+
+
+def iproyal_proxy_for(
+    geolocation: str, environ: Mapping[str, str], session: str
+) -> dict[str, str]:
+    """
+    Build the Playwright proxy settings for the IPRoyal residential exit.
+
+    The password field carries the IPRoyal routing parameters (country, session,
+    lifetime); error messages name only the missing variable and never a secret.
+
+    Args:
+        geolocation: The exit geolocation label ("uk" or "us").
+        environ: The environment mapping supplying credentials and optional host/port.
+        session: The sticky-session token appended to the routing parameters.
+    Returns:
+        proxy: The Playwright proxy dict with server, username, and routed password.
+    """
+    username = environ.get("IPROYAL_USERNAME")
+    if not username:
+        raise ProxyConfigurationError(
+            f"IPROYAL_USERNAME is required to proxy the {geolocation} exit but is not set"
+        )
+    password = environ.get("IPROYAL_PASSWORD")
+    if not password:
+        raise ProxyConfigurationError(
+            f"IPROYAL_PASSWORD is required to proxy the {geolocation} exit but is not set"
+        )
+    host = environ.get("IPROYAL_HOST", IPROYAL_DEFAULT_HOST)
+    port = environ.get("IPROYAL_PORT", IPROYAL_DEFAULT_PORT)
+    country = IPROYAL_COUNTRY_BY_GEOLOCATION[geolocation]
+    return {
+        "server": f"http://{host}:{port}",
+        "username": username,
+        "password": (
+            f"{password}_country-{country}_session-{session}"
+            f"_lifetime-{IPROYAL_SESSION_LIFETIME}"
+        ),
+    }
+
+
+def proxy_decision_for(
+    target_geolocation: str, observed_geolocation: str | None, exit_is_residential: bool
+) -> bool:
+    """
+    Decide whether the crawl must route through the proxy for one target geolocation.
+
+    Direct egress is allowed only when the machine already sits in the target
+    country on a residential exit; an unknown or non-residential exit routes
+    through the proxy (fail-closed).
+
+    Args:
+        target_geolocation: The geolocation the crawl must egress from ("uk" or "us").
+        observed_geolocation: The machine's current exit geolocation, or None when unknown.
+        exit_is_residential: Whether the machine's current exit looks residential.
+    Returns:
+        use_proxy: True when the crawl must route through the proxy.
+    """
+    return not (observed_geolocation == target_geolocation and exit_is_residential)
+
+
+def require_iproyal_credentials(geolocation: str, environ: Mapping[str, str]) -> None:
+    """
+    Fail closed before any request if the IPRoyal exit credentials are missing.
+
+    Delegates to iproyal_proxy_for with a throwaway session and discards the
+    result; a missing credential raises ProxyConfigurationError.
+
+    Args:
+        geolocation: The exit geolocation label ("uk" or "us").
+        environ: The environment mapping supplying credentials.
+    Returns:
+        None
+    """
+    iproyal_proxy_for(geolocation, environ, "preflight")
+
+
 @contextmanager
 def playwright_page_factory(
-    geolocation: str, *, user_agent: str = DEFAULT_USER_AGENT, headless: bool = False
+    geolocation: str,
+    *,
+    user_agent: str = DEFAULT_USER_AGENT,
+    headless: bool = False,
+    use_proxy: bool = True,
 ) -> Iterator[tuple[BrowserContext, Page]]:
     """
     Open a fresh Chromium context and page for one geolocation.
@@ -82,11 +174,19 @@ def playwright_page_factory(
         geolocation: The exit geolocation label selecting the browser locale.
         user_agent: The browser user-agent string.
         headless: Whether to launch Chromium headless.
+        use_proxy: Whether to route the browser through the IPRoyal exit; when
+            False the machine's own egress is used.
     Returns:
         context_and_page: A context manager yielding the (context, page) pair.
     """
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
+        launch_kwargs: dict = {"headless": headless}
+        if use_proxy:
+            # Proxy is set at launch (browser-level) so no context can exist without
+            # it: the real IP never reaches a live DV support site.
+            session = secrets.token_hex(8)
+            launch_kwargs["proxy"] = iproyal_proxy_for(geolocation, os.environ, session)
+        browser = playwright.chromium.launch(**launch_kwargs)
         try:
             context = browser.new_context(
                 viewport=DEFAULT_VIEWPORT,
@@ -224,6 +324,7 @@ class Crawler:
         page_factory: Callable[[str], AbstractContextManager[tuple[BrowserContext, Page]]] | None = None,
         user_agent: str = DEFAULT_USER_AGENT,
         headless: bool = False,
+        use_proxy: bool = True,
         consentomatic_bundle: ConsentomaticBundle | None = None,
     ) -> None:
         """
@@ -231,9 +332,12 @@ class Crawler:
 
         Args:
             page_factory: Injected factory yielding (context, page) for a geolocation;
-                None binds playwright_page_factory with this crawler's user_agent and headless.
+                None binds playwright_page_factory with this crawler's user_agent, headless,
+                and use_proxy.
             user_agent: The browser user-agent string used by the default factory.
             headless: Whether the default factory launches Chromium headless.
+            use_proxy: Whether the default factory routes through the IPRoyal exit;
+                True is fail-closed and only lifted by a runtime egress decision.
             consentomatic_bundle: Rule identifiers the banner probe searches for as CMP
                 script-src tells, or None.
         Returns:
@@ -241,13 +345,14 @@ class Crawler:
         """
         self.user_agent = user_agent
         self.headless = headless
+        self.use_proxy = use_proxy
         self.consentomatic_bundle = consentomatic_bundle
         if page_factory is None:
             def default_factory(
                 geolocation: str,
             ) -> AbstractContextManager[tuple[BrowserContext, Page]]:
                 return playwright_page_factory(
-                    geolocation, user_agent=user_agent, headless=headless
+                    geolocation, user_agent=user_agent, headless=headless, use_proxy=use_proxy
                 )
 
             self.page_factory = default_factory

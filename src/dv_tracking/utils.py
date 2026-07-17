@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import tldextract
+
+from dv_tracking import PROJECT_ROOT
 
 EXTRACT: tldextract.TLDExtract = tldextract.TLDExtract(suffix_list_urls=())
 
@@ -83,3 +86,33 @@ def read_jsonl(path: Path, build: Callable[[dict], object]) -> list:
         if line.strip():
             records.append(build(json.loads(line)))
     return records
+
+
+def load_env_file(path: Path = PROJECT_ROOT / ".env") -> None:
+    """
+    Loads KEY=value lines from a .env file into os.environ without clobbering.
+
+    Real exported variables win: each key is set only when absent, so exporting
+    or `source`-ing overrides the file. A missing file is a no-op; no value is
+    ever logged.
+
+    Args:
+        path: The .env file to read; defaults to the repo-root .env.
+    Returns:
+        None
+    """
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
