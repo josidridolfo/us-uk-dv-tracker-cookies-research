@@ -269,18 +269,23 @@ class PageProbes:
 
     def banner_signals(self, consentomatic_bundle: ConsentomaticBundle | None) -> BannerSignals:
         """
-        Run the DOM banner heuristic and report the DOM-derived signals.
+        Runs the DOM banner heuristic and the framework/CMP tell probe.
 
         Probe failure degrades to zeroed fields with error populated; never raises.
 
         Args:
-            consentomatic_bundle: Reserved for the framework probe; unused at this stage.
+            consentomatic_bundle: Carries the CMP rule identifiers searched for as
+                script-src tells, or None to search for none.
         Returns:
-            signals: The raw banner probe signals from the DOM heuristic.
+            signals: The raw banner probe signals.
         """
         consentomatic_matches: tuple[str, ...] = ()
         dom_matched = False
         dom_evidence: str | None = None
+        close_button_present = False
+        quick_exit_present = False
+        usp_present = False
+        gpp_present = False
         errors: list[str] = []
 
         try:
@@ -297,6 +302,8 @@ class PageProbes:
                 dom_evidence = (
                     str(result.get("evidence") or "")[:DOM_HEURISTIC_EXCERPT_MAX_LENGTH] or None
                 )
+                close_button_present = bool(result.get("close_button_present"))
+                quick_exit_present = bool(result.get("quick_exit_present"))
         except Exception as error:
             errors.append(f"dom_heuristic:{type(error).__name__}:{error}")
 
@@ -304,6 +311,8 @@ class PageProbes:
         try:
             result = self.page.evaluate(read_probe("consent_framework.js"), rule_identifiers)
             if isinstance(result, dict):
+                usp_present = bool(result.get("usp_present"))
+                gpp_present = bool(result.get("gpp_present"))
                 consentomatic_matches = tuple(str(x) for x in result.get("cmp_matches") or ())
         except Exception as error:
             errors.append(f"consent_framework:{type(error).__name__}:{error}")
@@ -312,6 +321,10 @@ class PageProbes:
             consentomatic_matches=consentomatic_matches,
             dom_heuristic_matched=dom_matched,
             dom_heuristic_evidence=dom_evidence,
+            usp_api_present=usp_present,
+            gpp_api_present=gpp_present,
+            close_button_present=close_button_present,
+            quick_exit_present=quick_exit_present,
             error="; ".join(errors) or None,
         )
 

@@ -136,6 +136,10 @@ class BannerSignals:
     consentomatic_matches: tuple[str, ...]
     dom_heuristic_matched: bool
     dom_heuristic_evidence: str | None
+    usp_api_present: bool
+    gpp_api_present: bool
+    close_button_present: bool
+    quick_exit_present: bool
     error: str | None
 
     @classmethod
