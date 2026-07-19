@@ -9,11 +9,17 @@ classification looked up from the cookie database.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
+from dv_tracking.classify.banner import BannerClassifier, BannerFinding
 from dv_tracking.classify.cookies import CookieDatabase
 from dv_tracking.classify.easyprivacy import EasyPrivacyMatcher
 from dv_tracking.classify.tracker_radar import TrackerRadar
-from dv_tracking.crawl.models import RawCookie, RawRequest
+from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial
+
+if TYPE_CHECKING:
+    # platform imports this module; the hint stays type-only to avoid an import cycle.
+    from dv_tracking.classify.platform import HostingPlatform, HostingPlatformClassifier
 
 # An identifier-like value: long enough, not purely numeric, with real variety.
 MINIMUM_IDENTIFIER_LENGTH: int = 8
@@ -156,4 +162,74 @@ class AnalyzedCookie:
             is_strictly_necessary=classification.is_strictly_necessary,
             is_eprivacy_5_3_candidate=classification.is_eprivacy_5_3_candidate,
             has_identifier_value=cls.has_identifier(raw.value),
+        )
+
+
+@dataclass(frozen=True)
+class AnalyzedTrial:
+    """The analyzed products of one raw trial: analyzed requests, cookies, banner, platform."""
+
+    site_id: str
+    url: str
+    geolocation: str
+    trial: int
+    blocked: bool
+    analyzed_requests: tuple[AnalyzedRequest, ...]
+    analyzed_cookies: tuple[AnalyzedCookie, ...]
+    banner_finding: BannerFinding
+    hosting_platform: HostingPlatform
+
+    @classmethod
+    def classify(
+        cls,
+        raw_trial: RawTrial,
+        *,
+        cookie_db: CookieDatabase,
+        ep_matcher: EasyPrivacyMatcher,
+        radar: TrackerRadar,
+        banner_classifier: BannerClassifier,
+        platform_classifier: HostingPlatformClassifier,
+        consentomatic_bundle: object | None = None,
+    ) -> AnalyzedTrial:
+        """
+        Derive the analyzed products of one raw trial.
+
+        Args:
+            raw_trial: The raw trial to analyze.
+            cookie_db: The cookie database used to classify cookie names.
+            ep_matcher: The host-only EasyPrivacy matcher.
+            radar: The DDG Tracker Radar index.
+            banner_classifier: The multi-source banner classifier.
+            platform_classifier: The hosting-platform classifier.
+            consentomatic_bundle: A bundle whose rules restrict recognised CMP tells, or None.
+        Returns:
+            analyzed: The analyzed trial carrying the derived requests, cookies, banner, platform.
+        """
+        analyzed_requests = tuple(
+            AnalyzedRequest.from_raw(request, ep_matcher, radar)
+            for request in raw_trial.requests
+        )
+        analyzed_cookies = tuple(
+            AnalyzedCookie.from_raw(cookie, cookie_db) for cookie in raw_trial.cookies
+        )
+        third_party_hosts = [
+            request.host for request in analyzed_requests if request.is_third_party
+        ]
+        banner_finding = banner_classifier.detect(
+            raw_trial.banner_signals,
+            consentomatic_bundle,
+            raw_trial.tcf_probe,
+            third_party_hosts,
+        )
+        hosting_platform = platform_classifier.classify(analyzed_requests, analyzed_cookies)
+        return cls(
+            site_id=raw_trial.site_id,
+            url=raw_trial.url,
+            geolocation=raw_trial.geolocation,
+            trial=raw_trial.trial,
+            blocked=raw_trial.blocked,
+            analyzed_requests=analyzed_requests,
+            analyzed_cookies=analyzed_cookies,
+            banner_finding=banner_finding,
+            hosting_platform=hosting_platform,
         )
