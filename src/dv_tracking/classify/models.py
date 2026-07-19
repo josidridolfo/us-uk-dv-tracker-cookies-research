@@ -15,7 +15,7 @@ from dv_tracking.classify.banner import BannerClassifier, BannerFinding
 from dv_tracking.classify.cookies import CookieDatabase
 from dv_tracking.classify.easyprivacy import EasyPrivacyMatcher
 from dv_tracking.classify.tracker_radar import TrackerRadar
-from dv_tracking.crawl.models import RawCookie, RawRequest, RawTrial
+from dv_tracking.crawl.models import LocalStorageSnapshot, RawCookie, RawRequest, RawTrial
 
 if TYPE_CHECKING:
     # platform imports this module; the hint stays type-only to avoid an import cycle.
@@ -178,6 +178,7 @@ class AnalyzedTrial:
     analyzed_cookies: tuple[AnalyzedCookie, ...]
     banner_finding: BannerFinding
     hosting_platform: HostingPlatform
+    local_storage: LocalStorageSnapshot | None
 
     @classmethod
     def classify(
@@ -232,4 +233,5 @@ class AnalyzedTrial:
             analyzed_cookies=analyzed_cookies,
             banner_finding=banner_finding,
             hosting_platform=hosting_platform,
+            local_storage=raw_trial.local_storage,
         )
