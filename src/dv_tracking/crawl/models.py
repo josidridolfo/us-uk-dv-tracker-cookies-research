@@ -49,7 +49,6 @@ class RawCookie:
     """A single cookie observed during the crawl, captured with its value."""
 
     name: str
-    value: str
     domain: str
     registered_domain: str
     path: str
@@ -59,6 +58,7 @@ class RawCookie:
     is_http_only: bool
     same_site: str
     is_third_party: bool
+    value: str
 
     @classmethod
     def from_dict(cls, mapping: dict) -> RawCookie:
@@ -91,7 +91,6 @@ class RawCookie:
         registered_domain = registered_domain_for_host(domain)
         return cls(
             name=raw.get("name", ""),
-            value=raw.get("value", ""),
             domain=domain,
             registered_domain=registered_domain,
             path=raw.get("path", "/"),
@@ -101,6 +100,7 @@ class RawCookie:
             is_http_only=bool(raw.get("httpOnly", False)),
             same_site=str(raw.get("sameSite") or "Unspecified"),
             is_third_party=is_third_party_to_origin(registered_domain, page_origin_domain),
+            value=raw.get("value", ""),
         )
 
 
