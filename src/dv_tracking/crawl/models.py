@@ -201,6 +201,7 @@ class RawTrial:
     local_storage: LocalStorageSnapshot | None
     crawl_start_utc: str
     crawl_end_utc: str
+    time_on_page_since_page_load: float | None
 
     @classmethod
     def from_dict(cls, mapping: dict) -> RawTrial:
@@ -268,6 +269,7 @@ class RawTrial:
             ),
             crawl_start_utc=metadata["crawl_start_utc"],
             crawl_end_utc=metadata["crawl_end_utc"],
+            time_on_page_since_page_load=metadata.get("time_on_page_since_page_load"),
         )
 
 

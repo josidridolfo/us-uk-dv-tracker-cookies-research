@@ -71,6 +71,7 @@ class RawStore:
             "crawl_date": crawl_date,
             "crawl_start_utc": trial.crawl_start_utc,
             "crawl_end_utc": trial.crawl_end_utc,
+            "time_on_page_since_page_load": trial.time_on_page_since_page_load,
             "navigation_status": trial.navigation_status,
             "navigation_error": trial.navigation_error,
             "blocked": trial.blocked,

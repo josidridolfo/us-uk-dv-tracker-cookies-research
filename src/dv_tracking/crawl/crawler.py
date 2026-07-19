@@ -48,6 +48,8 @@ DEFAULT_USER_AGENT: str = (
 
 # Post-load dwell before capture stops, indexed by trial (1, 2, 3).
 WAIT_SECONDS_BY_TRIAL: tuple[float, ...] = (5.0, 10.0, 15.0)
+# Post-load delay before the TCF ping, indexed by trial (1, 2, 3).
+TCF_PROBE_DELAY_SECONDS_BY_TRIAL: tuple[float, ...] = (1.0, 3.0, 7.0)
 
 DOM_HEURISTIC_KEYWORDS: tuple[str, ...] = (
     "cookie", "cookies", "consent", "privacy", "gdpr", "ccpa",
@@ -225,9 +227,47 @@ class PageProbes:
         """
         self.page = page
 
-    def tcf_probe(self, trial: int) -> TCFProbeResult | None:
-        # todo - build tcf field
-        return None
+    def tcf_probe(self, trial: int) -> TCFProbeResult:
+        """
+        Wait the per-trial delay, then run the TCF ping probe.
+
+        Args:
+            trial: The trial number selecting the post-load probe delay.
+        Returns:
+            probe: The TCF ping outcome; api_present is False when no CMP API responds.
+        """
+        time.sleep(TCF_PROBE_DELAY_SECONDS_BY_TRIAL[trial - 1])
+        try:
+            ping = self.page.evaluate(read_probe("tcf_ping.js"))
+        except Exception:
+            return TCFProbeResult(
+                api_present=False,
+                gdpr_applies=None,
+                cmp_id=None,
+                cmp_loaded=None,
+                cmp_status=None,
+                display_status=None,
+                tcf_policy_version=None,
+            )
+        if not isinstance(ping, dict):
+            return TCFProbeResult(
+                api_present=False,
+                gdpr_applies=None,
+                cmp_id=None,
+                cmp_loaded=None,
+                cmp_status=None,
+                display_status=None,
+                tcf_policy_version=None,
+            )
+        return TCFProbeResult(
+            api_present=True,
+            gdpr_applies=ping.get("gdprApplies"),
+            cmp_id=ping.get("cmpId"),
+            cmp_loaded=ping.get("cmpLoaded"),
+            cmp_status=ping.get("cmpStatus"),
+            display_status=ping.get("displayStatus"),
+            tcf_policy_version=ping.get("tcfPolicyVersion"),
+        )
 
     def local_storage(self) -> LocalStorageSnapshot:
         """
@@ -438,6 +478,7 @@ class Crawler:
         tcf_probe: TCFProbeResult | None = None
         local_storage: LocalStorageSnapshot | None = None
         banner_signals: BannerSignals | None = None
+        time_on_page: float | None = None
 
         crawl_start_utc = utcnow_iso()
         with self.page_factory(geolocation) as (context, page):
@@ -452,6 +493,7 @@ class Crawler:
                 blocked = True
 
             if not blocked:
+                page_loaded_at = time.monotonic()
                 time.sleep(WAIT_SECONDS_BY_TRIAL[trial - 1])
                 try:
                     cookies = tuple(
@@ -463,6 +505,7 @@ class Crawler:
                 tcf_probe = probes.tcf_probe(trial)
                 local_storage = probes.local_storage()
                 banner_signals = probes.banner_signals(self.consentomatic_bundle)
+                time_on_page = time.monotonic() - page_loaded_at
         crawl_end_utc = utcnow_iso()
 
         return RawTrial(
@@ -480,4 +523,5 @@ class Crawler:
             banner_signals=banner_signals,
             crawl_start_utc=crawl_start_utc,
             crawl_end_utc=crawl_end_utc,
+            time_on_page_since_page_load=time_on_page,
         )
