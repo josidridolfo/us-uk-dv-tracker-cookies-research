@@ -13,6 +13,23 @@ from dataclasses import dataclass
 from dv_tracking.classify.models import AnalyzedTrial
 from dv_tracking.sites import DVSupportSite
 
+# Direct-service categories: a visit strongly implies the visitor is seeking help,
+# so the health inference (Art 9, per C-252/21) is strong.
+DIRECT_SERVICE_CATEGORIES: frozenset[str] = frozenset(
+    {"local_shelter", "national_hotline", "legal_aid", "perpetrator_rehab"}
+)
+
+# Identity-specific categories: an additive Art 9 axis (orientation / ethnicity).
+IDENTITY_SPECIFIC_CATEGORIES: frozenset[str] = frozenset(
+    {"lgbtq_specific", "minority_community"}
+)
+
+# A visit implicates Art 9 for the direct-service or identity tiers; mixed-audience
+# advocacy / national-charity / youth bodies are a separate, weaker tier.
+ART9_IMPLICATED_CATEGORIES: frozenset[str] = (
+    DIRECT_SERVICE_CATEGORIES | IDENTITY_SPECIFIC_CATEGORIES
+)
+
 
 @dataclass(frozen=True)
 class SitePrivacyFindings:
@@ -50,6 +67,29 @@ class SitePrivacyFindings:
     hosting_platform: str
     local_storage_key_count: int
 
+    art_9_implicated: bool
+    art_9_identity_specific: bool
+    art_9_tier: str
+    art_9_tracking_cookie_present: bool
+    art_9_tracker_request_present: bool
+    art_9_transmission_present: bool
+
+    @staticmethod
+    def art_9_tier_for_category(category: str) -> str:
+        """
+        Label the Art 9 tier a site category falls into.
+
+        Args:
+            category: The corpus site category.
+        Returns:
+            tier: "direct_service", "identity", or "not_implicated".
+        """
+        if category in DIRECT_SERVICE_CATEGORIES:
+            return "direct_service"
+        if category in IDENTITY_SPECIFIC_CATEGORIES:
+            return "identity"
+        return "not_implicated"
+
     @classmethod
     def from_trial(
         cls, analyzed_trial: AnalyzedTrial, site: DVSupportSite, *, crawl_date: str = ""
@@ -83,6 +123,13 @@ class SitePrivacyFindings:
                 }
             )
         )
+
+        art_9_implicated = site.category in ART9_IMPLICATED_CATEGORIES
+        # Scoped to implicated sites: the art_9_ prefix means "on an Art 9 visit".
+        tracking_cookie_present = art_9_implicated and any(
+            cookie.is_eprivacy_5_3_candidate for cookie in cookies
+        )
+        tracker_request_present = art_9_implicated and bool(tracker_requests)
 
         return cls(
             site_id=site.site_id,
@@ -129,4 +176,10 @@ class SitePrivacyFindings:
                 if analyzed_trial.local_storage is not None
                 else 0
             ),
+            art_9_implicated=art_9_implicated,
+            art_9_identity_specific=site.category in IDENTITY_SPECIFIC_CATEGORIES,
+            art_9_tier=cls.art_9_tier_for_category(site.category),
+            art_9_tracking_cookie_present=tracking_cookie_present,
+            art_9_tracker_request_present=tracker_request_present,
+            art_9_transmission_present=tracking_cookie_present or tracker_request_present,
         )
