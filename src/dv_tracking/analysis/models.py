@@ -8,7 +8,9 @@ analysis; identity and category metadata are carried from the corpus site.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+
+import polars as pl
 
 from dv_tracking.classify.models import AnalyzedTrial
 from dv_tracking.sites import DVSupportSite
@@ -89,6 +91,53 @@ class SitePrivacyFindings:
         if category in IDENTITY_SPECIFIC_CATEGORIES:
             return "identity"
         return "not_implicated"
+
+    @classmethod
+    def to_dataframe(cls, findings: list[SitePrivacyFindings]) -> pl.DataFrame:
+        """
+        Build a flat per-(site, trial) DataFrame from a list of findings.
+
+        Args:
+            findings: The per-site-per-trial findings rows.
+        Returns:
+            frame: One row per findings record; empty when there are no findings.
+        """
+        if not findings:
+            return pl.DataFrame()
+        return pl.DataFrame([asdict(row) for row in findings], infer_schema_length=None)
+
+    @classmethod
+    def site_level_frame(cls, findings: list[SitePrivacyFindings]) -> pl.DataFrame:
+        """
+        Collapse the per-trial rows to one row per site at the longest-dwell visit.
+
+        Numeric and identity columns take the highest-numbered non-blocked trial's
+        value; boolean flags collapse by any-True across trials; blocked by all-True.
+
+        Args:
+            findings: The per-site-per-trial findings rows.
+        Returns:
+            frame: One row per (site_id, geolocation); empty when there are no findings.
+        """
+        frame = cls.to_dataframe(findings)
+        if frame.is_empty():
+            return frame
+        # Non-blocked first, then longest dwell (highest trial number).
+        order = [pl.col("blocked"), pl.col("trial")]
+        descending = [False, True]
+        aggregations = []
+        for column in frame.columns:
+            if column in ("site_id", "geolocation"):
+                continue
+            if column == "blocked":
+                aggregations.append(pl.col(column).all().alias(column))
+            elif frame.schema[column] == pl.Boolean:
+                aggregations.append(pl.col(column).any().alias(column))
+            else:
+                aggregations.append(
+                    pl.col(column).sort_by(order, descending=descending).first().alias(column)
+                )
+        return frame.group_by("site_id", "geolocation").agg(aggregations)
 
     @classmethod
     def from_trial(
