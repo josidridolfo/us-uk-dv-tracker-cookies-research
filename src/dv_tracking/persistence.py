@@ -12,6 +12,7 @@ On-disk layout:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 
@@ -97,3 +98,24 @@ class RawStore:
             trial: The rebuilt raw trial, or None when metadata is absent or unreadable.
         """
         return RawTrial.from_disk(trial_dir)
+
+    def iter_trials(self) -> Iterator[RawTrial]:
+        """
+        Yield every raw trial saved under the root, in cell/site/trial order.
+
+        Assumes a single crawl per geolocation under raw_root; multiple crawls for
+        one geolocation pool across runs and corrupt the 15s-dwell collapse.
+
+        Args:
+            None
+        Returns:
+            trials: An iterator over the readable raw trials; unreadable dirs are skipped.
+        """
+        if not self.raw_root.is_dir():
+            return
+        for cell_dir in sorted(path for path in self.raw_root.iterdir() if path.is_dir()):
+            for site_dir in sorted(path for path in cell_dir.iterdir() if path.is_dir()):
+                for trial_dir in sorted(path for path in site_dir.iterdir() if path.is_dir()):
+                    trial = RawTrial.from_disk(trial_dir)
+                    if trial is not None:
+                        yield trial

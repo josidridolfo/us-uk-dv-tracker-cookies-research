@@ -36,6 +36,7 @@ dependencies = [
 [project.scripts]
 dv-crawl = "dv_tracking.crawl.run:main"
 dv-validate-vpn = "dv_tracking.vpn:main"
+dv-analyze = "dv_tracking.analysis.analyze:main"
 
 [project.optional-dependencies]
 dev = [
