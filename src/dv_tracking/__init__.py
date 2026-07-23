@@ -3,7 +3,6 @@ US / UK tracking on domestic violence support websites -- a measurement study.
 
 A small-scale comparison of pre-consent third-party tracking on domestic
 violence support websites in the United States and the United Kingdom.
-See README.md.
 """
 
 from pathlib import Path

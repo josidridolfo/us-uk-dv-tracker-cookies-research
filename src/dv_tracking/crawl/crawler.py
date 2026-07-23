@@ -59,7 +59,7 @@ DOM_HEURISTIC_MINIMUM_Z_INDEX: int = 1
 DOM_HEURISTIC_EXCERPT_MAX_LENGTH: int = 200
 
 # IPRoyal residential-proxy exit: crawls route through the country residential exit
-# unless the machine already exits residentially in-country (see README/vpn gate).
+# unless the machine already exits residentially in the target country.
 IPROYAL_DEFAULT_HOST: str = "geo.iproyal.com"
 IPROYAL_DEFAULT_PORT: str = "12321"
 IPROYAL_SESSION_LIFETIME: str = "10m"

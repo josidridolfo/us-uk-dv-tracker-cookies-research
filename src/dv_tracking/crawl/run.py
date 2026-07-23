@@ -114,7 +114,7 @@ def main(
             return 2
 
         # Hard block: observe the actual exit and refuse to crawl unless it reads
-        # residential-in-target (pre-run gate on one rotated exit; see README).
+        # residential-in-target (pre-run gate on one rotated exit).
         try:
             validation = VpnValidation.check(
                 arguments.geolocation,
