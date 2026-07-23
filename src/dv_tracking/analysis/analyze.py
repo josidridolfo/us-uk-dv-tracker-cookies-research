@@ -64,20 +64,6 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def art_9_denominator(frame: pl.DataFrame) -> int:
-    """
-    The denominator for Art 9 transmission rates: the count of implicated sites.
-
-    Args:
-        frame: A site-level findings frame.
-    Returns:
-        denominator: The number of Art-9-implicated sites, or the row count if the column is absent.
-    """
-    if "art_9_implicated" not in frame.columns:
-        return frame.height
-    return int(frame.filter(pl.col("art_9_implicated")).height)
-
-
 def print_summary(frame: pl.DataFrame) -> None:
     """
     Print the aggregate-only jurisdiction summary from a site-level frame.
@@ -93,7 +79,7 @@ def print_summary(frame: pl.DataFrame) -> None:
     for geolocation in geolocations:
         cell = frame.filter(pl.col("geolocation") == geolocation)
         trackers = DistributionSummary.from_values(cell.get_column("tracker_request_count").to_list())
-        implicated = art_9_denominator(cell)
+        implicated = SitePrivacyFindings.art_9_denominator(cell)
         transmission = int(cell.filter(pl.col("art_9_transmission_present")).height)
         print(f"[{geolocation}] sites={cell.height} tracker_requests_median={trackers.median}")
         print(

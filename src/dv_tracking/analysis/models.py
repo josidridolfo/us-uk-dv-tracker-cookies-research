@@ -140,6 +140,20 @@ class SitePrivacyFindings:
         return frame.group_by("site_id", "geolocation").agg(aggregations)
 
     @classmethod
+    def art_9_denominator(cls, frame: pl.DataFrame) -> int:
+        """
+        The denominator for Art 9 transmission rates: the count of implicated sites.
+
+        Args:
+            frame: A site-level findings frame.
+        Returns:
+            denominator: The number of Art-9-implicated sites, or the row count if the column is absent.
+        """
+        if "art_9_implicated" not in frame.columns:
+            return frame.height
+        return int(frame.filter(pl.col("art_9_implicated")).height)
+
+    @classmethod
     def from_trial(
         cls, analyzed_trial: AnalyzedTrial, site: DVSupportSite, *, crawl_date: str = ""
     ) -> SitePrivacyFindings:
