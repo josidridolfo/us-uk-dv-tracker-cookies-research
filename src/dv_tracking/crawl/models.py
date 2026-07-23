@@ -1,9 +1,9 @@
 """
 Frozen records for the raw network trace captured during a crawl.
 
-A raw record holds what a single browser or network observation yields,
-including the registered domain and third-party status resolved against the
-visited page. Tracker classification belongs to the analysis stage.
+A raw record holds only what a single browser or network observation yields
+directly. Derived fields (registered domain, third-party status, tracker
+classification) belong to the analysis stage.
 """
 
 from __future__ import annotations
@@ -12,24 +12,17 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from dv_tracking.utils import (
-    is_third_party_to_origin,
-    keep_known_fields,
-    read_jsonl,
-    registered_domain_for_host,
-)
+from dv_tracking.utils import keep_known_fields, read_jsonl
 
 
 @dataclass(frozen=True)
 class RawRequest:
-    """A single captured network request with its registered domain and party."""
+    """A single captured network request; statically-observable fields only."""
 
     url: str
     method: str
     resource_type: str
     host: str
-    registered_domain: str
-    is_third_party: bool
 
     @classmethod
     def from_dict(cls, mapping: dict) -> RawRequest:
@@ -50,14 +43,12 @@ class RawCookie:
 
     name: str
     domain: str
-    registered_domain: str
     path: str
     expires_unix: float
     is_session: bool
     is_secure: bool
     is_http_only: bool
     same_site: str
-    is_third_party: bool
     value: str
 
     @classmethod
@@ -73,33 +64,28 @@ class RawCookie:
         return cls(**keep_known_fields(cls, mapping))
 
     @classmethod
-    def from_playwright(cls, raw: dict, page_origin_domain: str) -> RawCookie:
+    def from_playwright(cls, raw: dict) -> RawCookie:
         """
-        Map a Playwright cookie dict to a RawCookie, storing its value and party.
+        Map a Playwright cookie dict to a RawCookie, storing the value verbatim.
 
         Args:
             raw: One cookie dict as returned by BrowserContext.cookies().
-            page_origin_domain: The visited page's registered domain.
         Returns:
-            cookie: The raw cookie carrying its party and value.
+            cookie: The raw cookie carrying its value.
         """
         expires = raw.get("expires", -1.0)
         if expires is None:
             expires = -1.0
         expires = float(expires)
-        domain = (raw.get("domain") or "").lstrip(".")
-        registered_domain = registered_domain_for_host(domain)
         return cls(
             name=raw.get("name", ""),
-            domain=domain,
-            registered_domain=registered_domain,
+            domain=(raw.get("domain") or "").lstrip("."),
             path=raw.get("path", "/"),
             expires_unix=expires,
             is_session=expires < 0,
             is_secure=bool(raw.get("secure", False)),
             is_http_only=bool(raw.get("httpOnly", False)),
             same_site=str(raw.get("sameSite") or "Unspecified"),
-            is_third_party=is_third_party_to_origin(registered_domain, page_origin_domain),
             value=raw.get("value", ""),
         )
 

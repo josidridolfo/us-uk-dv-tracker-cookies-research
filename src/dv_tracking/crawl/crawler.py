@@ -33,7 +33,7 @@ from dv_tracking.crawl.models import (
 )
 from dv_tracking.crawl.probes import read_probe
 from dv_tracking.sites import DVSupportSite
-from dv_tracking.utils import is_third_party_to_origin, registered_domain_for_host, utcnow_iso
+from dv_tracking.utils import utcnow_iso
 
 NAVIGATION_TIMEOUT_MS: int = 30_000
 BLOCKED_STATUSES: tuple[int, ...] = (403, 429, 503)
@@ -454,20 +454,16 @@ class Crawler:
             trial_record: The raw trial holding the captured network requests.
         """
         captured_requests: list[RawRequest] = []
-        page_origin_domain = registered_domain_for_host(urlparse(site.url).hostname or "")
 
         def record_request(request: Request) -> None:
             host = urlparse(request.url).hostname or ""
             if host:
-                registered_domain = registered_domain_for_host(host)
                 captured_requests.append(
                     RawRequest(
                         url=request.url,
                         host=host,
                         method=request.method,
                         resource_type=request.resource_type,
-                        registered_domain=registered_domain,
-                        is_third_party=is_third_party_to_origin(registered_domain, page_origin_domain),
                     )
                 )
 
@@ -496,9 +492,7 @@ class Crawler:
                 page_loaded_at = time.monotonic()
                 time.sleep(WAIT_SECONDS_BY_TRIAL[trial - 1])
                 try:
-                    cookies = tuple(
-                        RawCookie.from_playwright(c, page_origin_domain) for c in context.cookies()
-                    )
+                    cookies = tuple(RawCookie.from_playwright(c) for c in context.cookies())
                 except Exception:
                     cookies = ()
                 probes = PageProbes(page)
