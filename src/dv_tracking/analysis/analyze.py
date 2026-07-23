@@ -11,12 +11,14 @@ denominator, not all sites.
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
 
 from dv_tracking import PROJECT_ROOT
 from dv_tracking.analysis.models import SitePrivacyFindings
+from dv_tracking.analysis.parquet_store import FindingsParquetStore
 from dv_tracking.analysis.statistics import DistributionSummary
 from dv_tracking.classify.banner import BannerClassifier
 from dv_tracking.classify.cookies import CookieDatabase
@@ -30,6 +32,7 @@ from dv_tracking.persistence import RawStore
 from dv_tracking.sites import DEFAULT_SITES_PATH, DVSupportSite
 
 DEFAULT_RAW_ROOT: Path = PROJECT_ROOT / "data" / "raw"
+DEFAULT_OUTPUT_DIR: Path = PROJECT_ROOT / "data" / "processed"
 DEFAULT_COOKIE_DATABASE_PATH: Path = (
     TRACKER_LISTS_DIR / "open_cookie_database" / "open-cookie-database.csv"
 )
@@ -49,6 +52,11 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze the raw crawl into per-site findings.")
     parser.add_argument("--raw-root", type=Path, default=DEFAULT_RAW_ROOT)
     parser.add_argument("--sites", type=Path, default=DEFAULT_SITES_PATH)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--crawl-date", default=datetime.now(tz=UTC).strftime("%Y-%m-%d"),
+        help="Crawl date used in the findings row and the parquet filenames.",
+    )
     parser.add_argument("--cookie-database", type=Path, default=DEFAULT_COOKIE_DATABASE_PATH)
     parser.add_argument("--easyprivacy", type=Path, default=DEFAULT_EASYPRIVACY_PATH)
     parser.add_argument("--tracker-radar-index", type=Path, default=DEFAULT_TRACKER_RADAR_INDEX_PATH)
@@ -120,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     consentomatic_bundle = ConsentomaticBundle.from_rules_file(arguments.consentomatic_rules)
 
     findings = []
+    analyzed_trials = []
     for raw_trial in RawStore(raw_root).iter_trials():
         site = sites_by_id.get(raw_trial.site_id)
         if site is None:
@@ -133,11 +142,20 @@ def main(argv: list[str] | None = None) -> int:
             platform_classifier=platform_classifier,
             consentomatic_bundle=consentomatic_bundle,
         )
-        findings.append(SitePrivacyFindings.from_trial(analyzed, site))
+        analyzed_trials.append(analyzed)
+        findings.append(SitePrivacyFindings.from_trial(analyzed, site, crawl_date=arguments.crawl_date))
 
     if not findings:
         print("ERROR: no analyzable trials found under the raw root")
         return 1
+
+    store = FindingsParquetStore(arguments.output_dir)
+    site_path = store.save_site_findings(findings, arguments.crawl_date)
+    cookie_path = store.save_cookie_findings(analyzed_trials, arguments.crawl_date)
+    exfil_path = store.save_exfiltration_edges(analyzed_trials, arguments.crawl_date)
+    print(f"wrote {site_path}")
+    print(f"wrote {cookie_path}")
+    print(f"wrote {exfil_path}")
 
     site_frame = SitePrivacyFindings.site_level_frame(findings)
     successful = site_frame.filter(~pl.col("blocked"))
