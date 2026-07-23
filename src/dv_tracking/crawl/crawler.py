@@ -273,6 +273,9 @@ class PageProbes:
         """
         Samples the visited page's first-party (top-origin) localStorage stats.
 
+        Scoped to the top document's origin: cross-origin iframe localStorage is
+        not read, so third-party localStorage is out of scope for this measure.
+
         Args:
             None
         Returns:

@@ -67,7 +67,8 @@ class SitePrivacyFindings:
     banner_primary_method: str | None
     cmp_vendor: str | None
     hosting_platform: str
-    local_storage_key_count: int
+    # First-party (top-origin) localStorage only; cross-origin iframe stores are out of scope.
+    first_party_local_storage_key_count: int
 
     art_9_implicated: bool
     art_9_identity_specific: bool
@@ -234,7 +235,7 @@ class SitePrivacyFindings:
             banner_primary_method=banner.primary_method,
             cmp_vendor=banner.cmp_vendor,
             hosting_platform=analyzed_trial.hosting_platform.platform,
-            local_storage_key_count=(
+            first_party_local_storage_key_count=(
                 len(analyzed_trial.local_storage.entries)
                 if analyzed_trial.local_storage is not None
                 else 0

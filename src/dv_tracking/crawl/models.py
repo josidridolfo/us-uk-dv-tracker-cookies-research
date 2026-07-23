@@ -146,7 +146,12 @@ class BannerSignals:
 
 @dataclass(frozen=True)
 class LocalStorageSnapshot:
-    """The visited page's first-party (top-origin) localStorage entries and aggregate stats."""
+    """The visited page's first-party (top-origin) localStorage entries and aggregate stats.
+
+    Deliberately scoped: cross-origin iframe localStorage is not read, so
+    third-party localStorage is out of this measure (cookies are captured across
+    all origins; localStorage is first-party only).
+    """
 
     entries: tuple[tuple[str, str], ...]
     key_count: int

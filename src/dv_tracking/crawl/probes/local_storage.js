@@ -1,5 +1,6 @@
-// Probe: localStorage snapshot.
-// Called:  page.evaluate(source)
+// Probe: first-party localStorage snapshot (top document origin only).
+// Runs in the top frame, so only the visited origin's store is read; cross-
+// origin iframe localStorage is out of scope. Called: page.evaluate(source)
 // Returns: {entries: [[k, v], ...], error}
 // Side effects: none (read-only enumeration of localStorage).
 
