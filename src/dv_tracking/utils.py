@@ -14,6 +14,7 @@ from pathlib import Path
 import tldextract
 
 from dv_tracking import PROJECT_ROOT
+from dv_tracking.constants import COUNTRY_CODE_TO_GEOLOCATION, DATACENTER_KEYWORDS
 
 EXTRACT: tldextract.TLDExtract = tldextract.TLDExtract(suffix_list_urls=())
 
@@ -53,6 +54,32 @@ def utcnow_iso() -> str:
         timestamp: The current UTC instant in ISO 8601 format.
     """
     return datetime.now(tz=UTC).isoformat()
+
+
+def is_datacenter(org: str) -> bool:
+    """
+    Report whether an ipinfo org string names a known datacenter or cloud host.
+
+    Args:
+        org: The ipinfo `org` field for the exit IP.
+    Returns:
+        datacenter: True when any datacenter keyword appears in the lowercased org.
+    """
+    lowered = org.lower()
+    datacenter = any(keyword in lowered for keyword in DATACENTER_KEYWORDS)
+    return datacenter
+
+
+def geolocation_for_country(country_code: str) -> str | None:
+    """
+    Map an ISO country code to the project geolocation label.
+
+    Args:
+        country_code: The ISO 3166-1 alpha-2 country code.
+    Returns:
+        geolocation: The mapped label, or None when the country is unmapped.
+    """
+    return COUNTRY_CODE_TO_GEOLOCATION.get(country_code)
 
 
 def keep_known_fields(cls: type, mapping: dict) -> dict:

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import os
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,14 +20,7 @@ from dv_tracking.crawl.models import ConsentomaticBundle
 from dv_tracking.persistence import RawStore
 from dv_tracking.sites import DEFAULT_SITES_PATH, DVSupportSite
 from dv_tracking.utils import load_env_file
-from dv_tracking.vpn import (
-    ExitCheckError,
-    VpnLookupError,
-    VpnValidation,
-    decide_crawl_egress,
-    look_up_exit_ip_and_country,
-    look_up_exit_through_page,
-)
+from dv_tracking.vpn import ExitCheckError, VpnLookupError, VpnValidator
 
 DEFAULT_RAW_ROOT: Path = PROJECT_ROOT / "data" / "raw"
 DEFAULT_TRIALS: int = 3
@@ -66,8 +58,6 @@ def main(
     argv: list[str] | None = None,
     *,
     crawler: object | None = None,
-    look_up: Callable[[], tuple[str, str, str]] = look_up_exit_ip_and_country,
-    look_up_through_page: Callable[..., tuple[str, str, str]] = look_up_exit_through_page,
 ) -> int:
     """
     Run the crawl over the corpus and save every trial to the raw store.
@@ -77,10 +67,6 @@ def main(
         crawler: An object exposing crawl(site, geolocation, trial) -> RawTrial;
             when None, a real Crawler is constructed after the egress decision and
             residential check.
-        look_up: Callable returning the machine's exit IP, country, and org, used
-            by the egress decision on the real-crawl path.
-        look_up_through_page: Callable reading the exit through the crawl's own page
-            egress, used by the blocking residential check on the real-crawl path.
     Returns:
         exit_code: 0 on completion (per-site failures are reported, not fatal);
             2 when the egress requires the proxy but its credentials are missing.
@@ -106,8 +92,9 @@ def main(
     # Real-crawl path: direct only when already in-country on a residential exit,
     # else proxy; a missing proxy credential fails closed before any request.
     if crawler is None:
+        validator = VpnValidator(arguments.geolocation, os.environ)
         try:
-            use_proxy = decide_crawl_egress(arguments.geolocation, os.environ, look_up=look_up)
+            use_proxy = validator.decide_egress()
         except ProxyConfigurationError as error:
             print(f"ERROR: {error}")
             print("Do NOT run the crawl.")
@@ -116,11 +103,7 @@ def main(
         # Hard block: observe the actual exit and refuse to crawl unless it reads
         # residential-in-target (pre-run gate on one rotated exit).
         try:
-            validation = VpnValidation.check(
-                arguments.geolocation,
-                use_proxy=use_proxy,
-                look_up_through_page=look_up_through_page,
-            )
+            validation = validator.validate(use_proxy=use_proxy)
         except VpnLookupError as error:
             raise ExitCheckError(
                 f"{arguments.geolocation} exit could not be observed for the residential "

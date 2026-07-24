@@ -184,8 +184,8 @@ def playwright_page_factory(
     with sync_playwright() as playwright:
         launch_kwargs: dict = {"headless": headless}
         if use_proxy:
-            # Proxy is set at launch (browser-level) so no context can exist without
-            # it: the real IP never reaches a live DV support site.
+            # Proxy is set at launch (browser-level) so no context, and no request,
+            # can bypass it when the crawl must route through the exit.
             session = secrets.token_hex(8)
             launch_kwargs["proxy"] = iproyal_proxy_for(geolocation, os.environ, session)
         browser = playwright.chromium.launch(**launch_kwargs)
