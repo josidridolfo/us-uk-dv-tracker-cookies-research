@@ -45,7 +45,7 @@ class TrackerEntry:
     @classmethod
     def from_index_entry(cls, domain: str, entry: dict) -> TrackerEntry:
         """
-        Build a tracker entry from one DDG index record.
+        Builds a tracker entry from one DDG index record.
 
         Args:
             domain: The registered domain the record is keyed under.
@@ -94,7 +94,7 @@ class TrackerRadar:
     @classmethod
     def from_index(cls, path: Path) -> TrackerRadar:
         """
-        Load the compact DDG Tracker Radar index.
+        Loads the compact DDG Tracker Radar index.
 
         Args:
             path: Path to the DDG index JSON snapshot.
@@ -109,7 +109,7 @@ class TrackerRadar:
 
     def lookup(self, host: str) -> TrackerEntry | None:
         """
-        Return the DDG entry for a host, falling back to its registered domain.
+        Returns the DDG entry for a host, falling back to its registered domain.
 
         Args:
             host: The request host.

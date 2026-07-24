@@ -88,7 +88,7 @@ class GeolocationSummaryRow:
     @classmethod
     def from_run(cls, run_label: str, cell: pl.DataFrame) -> GeolocationSummaryRow:
         """
-        Summarise one run's site-level frame into a descriptive row.
+        Summarises one run's site-level frame into a descriptive row.
 
         Art 9 transmission is a rate over the Art-9-implicated denominator, not
         all sites; ePrivacy and banner rates are over all successful sites.
@@ -136,7 +136,7 @@ class JurisdictionSummary:
     @classmethod
     def from_runs(cls, run_a: SummaryRun, run_b: SummaryRun) -> JurisdictionSummary:
         """
-        Build the summary from two explicit runs, in (run_a, run_b) order.
+        Builds the summary from two explicit runs, in (run_a, run_b) order.
 
         Each run is collapsed to one row per site at the longest dwell, blocked
         sites dropped; a run with no successful sites contributes no row.
@@ -192,7 +192,7 @@ class JurisdictionSummary:
 
     def write_latex(self, path: Path) -> Path:
         """
-        Write the summary table as a LaTeX file.
+        Writes the summary table as a LaTeX file.
 
         Args:
             path: The file path to write.

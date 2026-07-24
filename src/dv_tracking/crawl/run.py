@@ -28,7 +28,7 @@ DEFAULT_TRIALS: int = 3
 
 def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     """
-    Parse the dv-crawl command-line arguments.
+    Parses the dv-crawl command-line arguments.
 
     Args:
         argv: The argument vector; defaults to sys.argv when None.
@@ -60,7 +60,7 @@ def main(
     crawler: object | None = None,
 ) -> int:
     """
-    Run the crawl over the corpus and save every trial to the raw store.
+    Runs the crawl over the corpus and saves every trial to the raw store.
 
     Args:
         argv: The argument vector; defaults to sys.argv when None.

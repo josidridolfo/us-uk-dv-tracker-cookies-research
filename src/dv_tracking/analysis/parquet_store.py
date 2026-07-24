@@ -28,11 +28,11 @@ COOKIE_EXFILTRATION_PREFIX: str = "cookie_exfiltration_edges"
 
 
 class FindingsParquetStore:
-    """Write the per-site findings and per-cookie exfiltration parquet outputs."""
+    """Writes the per-site findings and per-cookie exfiltration parquet outputs."""
 
     def __init__(self, out_dir: Path) -> None:
         """
-        Bind the store to an output directory.
+        Binds the store to an output directory.
 
         Args:
             out_dir: The directory the parquet files are written under.
@@ -45,7 +45,7 @@ class FindingsParquetStore:
         self, findings: list[SitePrivacyFindings], crawl_date: str, geolocation: str
     ) -> Path:
         """
-        Write the per-site findings for one run as a date-and-geolocation-suffixed parquet.
+        Writes the per-site findings for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             findings: The per-site-per-trial findings rows.
@@ -63,7 +63,7 @@ class FindingsParquetStore:
         self, analyzed_trials: list[AnalyzedTrial], crawl_date: str, geolocation: str
     ) -> Path:
         """
-        Write the per-cookie classification census for one run as a date-and-geolocation-suffixed parquet.
+        Writes the per-cookie classification census for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             analyzed_trials: The analyzed trials whose cookies are enumerated.
@@ -107,7 +107,7 @@ class FindingsParquetStore:
         self, analyzed_trials: list[AnalyzedTrial], crawl_date: str, geolocation: str
     ) -> Path:
         """
-        Write the URL-channel exfiltration edges for one run as a date-and-geolocation-suffixed parquet.
+        Writes the URL-channel exfiltration edges for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             analyzed_trials: The analyzed trials scanned for exfiltration edges.

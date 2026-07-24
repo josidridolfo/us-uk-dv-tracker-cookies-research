@@ -58,7 +58,7 @@ def utcnow_iso() -> str:
 
 def is_datacenter(org: str) -> bool:
     """
-    Report whether an ipinfo org string names a known datacenter or cloud host.
+    Reports whether an ipinfo org string names a known datacenter or cloud host.
 
     Args:
         org: The ipinfo `org` field for the exit IP.
@@ -72,7 +72,7 @@ def is_datacenter(org: str) -> bool:
 
 def geolocation_for_country(country_code: str) -> str | None:
     """
-    Map an ISO country code to the project geolocation label.
+    Maps an ISO country code to the project geolocation label.
 
     Args:
         country_code: The ISO 3166-1 alpha-2 country code.
@@ -84,7 +84,7 @@ def geolocation_for_country(country_code: str) -> str | None:
 
 def keep_known_fields(cls: type, mapping: dict) -> dict:
     """
-    Filter a mapping down to the keys a dataclass accepts.
+    Filters a mapping down to the keys a dataclass accepts.
 
     Args:
         cls: The dataclass whose field names bound the result.
@@ -112,7 +112,7 @@ LATEX_SPECIAL_CHARS: dict[str, str] = {
 
 def escape_latex(text: str) -> str:
     """
-    Escape the LaTeX special characters in a string for use in a table cell.
+    Escapes the LaTeX special characters in a string for use in a table cell.
 
     A single pass over the source characters, so braces introduced by the
     backslash replacement are never re-escaped.
@@ -128,7 +128,7 @@ def escape_latex(text: str) -> str:
 
 def format_latex_number(value: float | int, decimals: int) -> str:
     """
-    Format a numeric value at a fixed number of decimal places.
+    Formats a numeric value at a fixed number of decimal places.
 
     Args:
         value: The numeric value to format.
@@ -142,7 +142,7 @@ def format_latex_number(value: float | int, decimals: int) -> str:
 
 def latex_column_spec(alignments: tuple[str, ...]) -> str:
     """
-    Join per-column alignment letters into a tabular column specification.
+    Joins per-column alignment letters into a tabular column specification.
 
     Args:
         alignments: One alignment letter per column, each in {"l", "r", "c"}.
@@ -160,7 +160,7 @@ def latex_column_spec(alignments: tuple[str, ...]) -> str:
 
 def read_jsonl(path: Path, build: Callable[[dict], object]) -> list:
     """
-    Read a JSONL file into a list of records via a builder.
+    Reads a JSONL file into a list of records via a builder.
 
     Args:
         path: The JSONL file to read; a missing file yields an empty list.

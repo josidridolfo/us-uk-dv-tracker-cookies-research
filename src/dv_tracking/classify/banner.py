@@ -100,7 +100,7 @@ class BannerClassifier:
     @staticmethod
     def classify_banner_type(text: str | None) -> str | None:
         """
-        Tag captured banner text as consent, opt_out, mixed, or notice.
+        Tags captured banner text as consent, opt_out, mixed, or notice.
 
         Args:
             text: The captured banner evidence text, or None.
@@ -123,7 +123,7 @@ class BannerClassifier:
     @staticmethod
     def canonical_vendor(consentomatic_name: str) -> str:
         """
-        Map a Consent-O-Matic rule key to a canonical CMP vendor label.
+        Maps a Consent-O-Matic rule key to a canonical CMP vendor label.
 
         Args:
             consentomatic_name: The Consent-O-Matic rule key.
@@ -135,7 +135,7 @@ class BannerClassifier:
     @staticmethod
     def hostname_signal(hosts: list[str]) -> tuple[str | None, str | None]:
         """
-        Find the first CMP-vendor host tell among a set of hosts.
+        Finds the first CMP-vendor host tell among a set of hosts.
 
         Args:
             hosts: The request hosts to scan.
@@ -155,7 +155,7 @@ class BannerClassifier:
     @staticmethod
     def pick_primary_method(methods: list[str]) -> str | None:
         """
-        Pick the highest-confidence method that fired.
+        Picks the highest-confidence method that fired.
 
         Args:
             methods: The methods that fired.
@@ -170,7 +170,7 @@ class BannerClassifier:
     @staticmethod
     def dedupe_preserve_order(values: list[str]) -> list[str]:
         """
-        Drop duplicate values, keeping first-seen order.
+        Drops duplicate values, keeping first-seen order.
 
         Args:
             values: The values to deduplicate.
@@ -193,7 +193,7 @@ class BannerClassifier:
         hostname: list[str],
     ) -> BannerFinding:
         """
-        Combine the four signals into a per-site banner finding.
+        Combines the four signals into a per-site banner finding.
 
         Args:
             banner_signals: The raw DOM/JS probe outputs, or None.

@@ -80,7 +80,7 @@ class SitePrivacyFindings:
     @staticmethod
     def art_9_tier_for_category(category: str) -> str:
         """
-        Label the Art 9 tier a site category falls into.
+        Labels the Art 9 tier a site category falls into.
 
         Args:
             category: The corpus site category.
@@ -96,7 +96,7 @@ class SitePrivacyFindings:
     @classmethod
     def to_dataframe(cls, findings: list[SitePrivacyFindings]) -> pl.DataFrame:
         """
-        Build a flat per-(site, trial) DataFrame from a list of findings.
+        Builds a flat per-(site, trial) DataFrame from a list of findings.
 
         Args:
             findings: The per-site-per-trial findings rows.
@@ -110,7 +110,7 @@ class SitePrivacyFindings:
     @classmethod
     def site_level_frame(cls, findings: list[SitePrivacyFindings]) -> pl.DataFrame:
         """
-        Collapse the per-trial rows to one row per site at the longest-dwell visit.
+        Collapses the per-trial rows to one row per site at the longest-dwell visit.
 
         Numeric and identity columns take the highest-numbered non-blocked trial's
         value; boolean flags collapse by any-True across trials; blocked by all-True.
@@ -159,7 +159,7 @@ class SitePrivacyFindings:
         cls, analyzed_trial: AnalyzedTrial, site: DVSupportSite, *, crawl_date: str = ""
     ) -> SitePrivacyFindings:
         """
-        Aggregate one analyzed trial into a per-site findings row.
+        Aggregates one analyzed trial into a per-site findings row.
 
         Args:
             analyzed_trial: The analyzed trial to aggregate.

@@ -122,7 +122,7 @@ class ExfilEdge:
     @classmethod
     def find_all(cls, analyzed_trial: AnalyzedTrial) -> list[ExfilEdge]:
         """
-        Find first-party cookie values and components reaching a third-party request URL.
+        Finds first-party cookie values and components reaching a third-party request URL.
 
         Args:
             analyzed_trial: The analyzed trial whose cookies and requests are scanned.
@@ -214,7 +214,7 @@ class ExfilEdge:
         matched_token: str,
     ) -> ExfilEdge:
         """
-        Build one exfiltration edge from a cookie and its destination request.
+        Builds one exfiltration edge from a cookie and its destination request.
 
         Args:
             cookie: The first-party cookie whose value or component was found.

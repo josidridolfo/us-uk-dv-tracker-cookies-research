@@ -40,7 +40,7 @@ class DVSupportSite:
     @staticmethod
     def significant_rows(rows: list[list[str]]) -> list[list[str]]:
         """
-        Drop comment and blank rows from parsed CSV rows.
+        Drops comment and blank rows from parsed CSV rows.
 
         Args:
             rows: The raw CSV rows as parsed by csv.reader.
@@ -52,7 +52,7 @@ class DVSupportSite:
     @staticmethod
     def row_to_site(header: list[str], fields: list[str], data_row_number: int) -> DVSupportSite:
         """
-        Build one DVSupportSite from a header and a data row.
+        Builds one DVSupportSite from a header and a data row.
 
         Args:
             header: The stripped column names, in file order.
@@ -80,7 +80,7 @@ class DVSupportSite:
     @classmethod
     def load_all(cls, path: Path | None = None) -> list[DVSupportSite]:
         """
-        Load every DV support site from the six-column corpus CSV.
+        Loads every DV support site from the six-column corpus CSV.
 
         Args:
             path: Corpus CSV path; defaults to DEFAULT_SITES_PATH when None.

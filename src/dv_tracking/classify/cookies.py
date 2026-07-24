@@ -49,7 +49,7 @@ class CookieRule:
     @staticmethod
     def parse_rule(row: dict[str, str]) -> CookieRule | None:
         """
-        Build a normalised rule from one Open Cookie Database CSV row.
+        Builds a normalised rule from one Open Cookie Database CSV row.
 
         Args:
             row: The decoded CSV row keyed by OCD column names.
@@ -75,7 +75,7 @@ class CookieRule:
     @staticmethod
     def compile_pattern(name: str) -> re.Pattern[str] | None:
         """
-        Compile a wildcard/prefix cookie name into a full-match pattern.
+        Compiles a wildcard/prefix cookie name into a full-match pattern.
 
         Args:
             name: The wildcard cookie name; a literal `*` maps to `.*`, otherwise
@@ -159,7 +159,7 @@ class CookieDatabase:
     @classmethod
     def from_csv(cls, path: Path) -> CookieDatabase:
         """
-        Load the Open Cookie Database CSV into an in-memory classifier.
+        Loads the Open Cookie Database CSV into an in-memory classifier.
 
         Args:
             path: Path to the Open Cookie Database CSV snapshot.
@@ -183,7 +183,7 @@ class CookieDatabase:
 
     def classify(self, cookie_name: str) -> CookieClassification:
         """
-        Classify a cookie name against the exact then wildcard rules.
+        Classifies a cookie name against the exact then wildcard rules.
 
         Args:
             cookie_name: The observed cookie name.

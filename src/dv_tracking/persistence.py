@@ -23,7 +23,7 @@ class RawStore:
 
     def __init__(self, raw_root: Path) -> None:
         """
-        Bind the store to a raw-output root directory.
+        Binds the store to a raw-output root directory.
 
         Args:
             raw_root: The root directory under which trial directories are created.
@@ -34,7 +34,7 @@ class RawStore:
 
     def save(self, trial: RawTrial, exit_info: dict, crawl_date: str) -> Path:
         """
-        Write requests.jsonl, cookies.jsonl and metadata.json for one raw trial.
+        Writes requests.jsonl, cookies.jsonl and metadata.json for one raw trial.
 
         Args:
             trial: The raw trial to persist.
@@ -89,7 +89,7 @@ class RawStore:
 
     def load(self, trial_dir: Path) -> RawTrial | None:
         """
-        Read one raw trial back from its directory.
+        Reads one raw trial back from its directory.
 
         Args:
             trial_dir: The trial directory holding metadata.json and the JSONL traces.
@@ -100,7 +100,7 @@ class RawStore:
 
     def iter_run(self, crawl_date: str, geolocation: str) -> Iterator[RawTrial]:
         """
-        Yield the raw trials of exactly one run's cell directory, in site/trial order.
+        Yields the raw trials of exactly one run's cell directory, in site/trial order.
 
         Reads only <raw_root>/<crawl_date>_<geolocation>/; the directory name
         fixes the geolocation, so no per-trial geolocation guard is applied.

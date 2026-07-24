@@ -24,7 +24,7 @@ class Warehouse:
 
     def __init__(self, db_path: Path, sql_dir: Path) -> None:
         """
-        Bind the warehouse to a DuckDB file and a SQL model directory.
+        Binds the warehouse to a DuckDB file and a SQL model directory.
 
         Args:
             db_path: Path to the DuckDB file, created if missing.
@@ -39,7 +39,7 @@ class Warehouse:
     @staticmethod
     def jsonl_to_parquet_sql(glob: str, out_path: Path, crawl_date: str, geolocation: str) -> str:
         """
-        Build the COPY statement that augments JSONL rows with identity keys and writes parquet.
+        Builds the COPY statement that augments JSONL rows with identity keys and writes parquet.
 
         Args:
             glob: Absolute glob matching the per-trial JSONL files for one cell.
@@ -61,7 +61,7 @@ class Warehouse:
 
     def consolidate_raw(self, raw_store: RawStore, out_dir: Path) -> Path:
         """
-        Fold the per-trial JSONL under a RawStore into per-cell parquet.
+        Folds the per-trial JSONL under a RawStore into per-cell parquet.
 
         Args:
             raw_store: The store whose raw_root holds the crawl-cell directories.
@@ -103,7 +103,7 @@ class Warehouse:
 
     def build(self) -> None:
         """
-        Run the layer SQL against the DuckDB file in layer order.
+        Runs the layer SQL against the DuckDB file in layer order.
 
         Args:
             None

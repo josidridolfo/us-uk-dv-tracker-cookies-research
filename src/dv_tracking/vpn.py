@@ -67,7 +67,7 @@ class VpnValidator:
 
     def __init__(self, geolocation: str, environ: Mapping[str, str]) -> None:
         """
-        Bind the validator to a target geolocation and environment.
+        Binds the validator to a target geolocation and environment.
 
         Args:
             geolocation: The geolocation the crawl must egress from ("uk" or "us").
@@ -80,7 +80,7 @@ class VpnValidator:
 
     def look_up_exit_ip_and_country(self) -> tuple[str, str, str]:
         """
-        Query the geolocation endpoint for the current exit IP, country code, and org.
+        Queries the geolocation endpoint for the current exit IP, country code, and org.
 
         Args:
             None
@@ -102,7 +102,7 @@ class VpnValidator:
 
     def look_up_exit_through_page(self, *, use_proxy: bool) -> tuple[str, str, str]:
         """
-        Read the exit IP, country, and org through the crawler's own Playwright egress.
+        Reads the exit IP, country, and org through the crawler's own Playwright egress.
 
         Args:
             use_proxy: Whether the browser routes through the IPRoyal exit.
@@ -125,7 +125,7 @@ class VpnValidator:
 
     def decide_egress(self) -> bool:
         """
-        Decide whether the crawl routes through the proxy, requiring creds only if so.
+        Decides whether the crawl routes through the proxy, requiring creds only if so.
 
         Direct egress iff the machine already sits in the target country on a
         residential exit; any other outcome (including a lookup failure) routes
@@ -152,7 +152,7 @@ class VpnValidator:
 
     def validate(self, *, use_proxy: bool) -> VpnValidation:
         """
-        Check the crawl's egress against the expected geolocation through the real page.
+        Checks the crawl's egress against the expected geolocation through the real page.
 
         The exit is read through the same egress the crawl uses. It passes only
         when the country matches the expected one AND the exit looks residential.

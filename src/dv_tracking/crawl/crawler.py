@@ -71,7 +71,7 @@ class BlockedNavigationError(Exception):
 
     def __init__(self, status: int) -> None:
         """
-        Record the blocked HTTP status on the exception.
+        Records the blocked HTTP status on the exception.
 
         Args:
             status: The blocked HTTP status code (403, 429 or 503).
@@ -90,7 +90,7 @@ def iproyal_proxy_for(
     geolocation: str, environ: Mapping[str, str], session: str
 ) -> dict[str, str]:
     """
-    Build the Playwright proxy settings for the IPRoyal residential exit.
+    Builds the Playwright proxy settings for the IPRoyal residential exit.
 
     The password field carries the IPRoyal routing parameters (country, session,
     lifetime); error messages name only the missing variable and never a secret.
@@ -129,7 +129,7 @@ def proxy_decision_for(
     target_geolocation: str, observed_geolocation: str | None, exit_is_residential: bool
 ) -> bool:
     """
-    Decide whether the crawl must route through the proxy for one target geolocation.
+    Decides whether the crawl must route through the proxy for one target geolocation.
 
     Direct egress is allowed only when the machine already sits in the target
     country on a residential exit; an unknown or non-residential exit routes
@@ -147,7 +147,7 @@ def proxy_decision_for(
 
 def require_iproyal_credentials(geolocation: str, environ: Mapping[str, str]) -> None:
     """
-    Fail closed before any request if the IPRoyal exit credentials are missing.
+    Fails closed before any request if the IPRoyal exit credentials are missing.
 
     Delegates to iproyal_proxy_for with a throwaway session and discards the
     result; a missing credential raises ProxyConfigurationError.
@@ -170,7 +170,7 @@ def playwright_page_factory(
     use_proxy: bool = True,
 ) -> Iterator[tuple[BrowserContext, Page]]:
     """
-    Open a fresh Chromium context and page for one geolocation.
+    Opens a fresh Chromium context and page for one geolocation.
 
     Args:
         geolocation: The exit geolocation label selecting the browser locale.
@@ -218,7 +218,7 @@ class PageProbes:
 
     def __init__(self, page: Page) -> None:
         """
-        Bind the probes to a page.
+        Binds the probes to a page.
 
         Args:
             page: The Playwright page to probe.
@@ -229,7 +229,7 @@ class PageProbes:
 
     def tcf_probe(self, trial: int) -> TCFProbeResult:
         """
-        Wait the per-trial delay, then run the TCF ping probe.
+        Waits the per-trial delay, then runs the TCF ping probe.
 
         Args:
             trial: The trial number selecting the post-load probe delay.
@@ -384,7 +384,7 @@ class Crawler:
         consentomatic_bundle: ConsentomaticBundle | None = None,
     ) -> None:
         """
-        Configure the crawler and bind the page factory.
+        Configures the crawler and binds the page factory.
 
         Args:
             page_factory: Injected factory yielding (context, page) for a geolocation;
@@ -417,7 +417,7 @@ class Crawler:
 
     def navigate(self, page: Page, url: str) -> int | None:
         """
-        Navigate to a URL with bounded exponential-backoff retry.
+        Navigates to a URL with bounded exponential-backoff retry.
 
         A blocked HTTP status (403, 429, 503) raises BlockedNavigationError and
         is not retried; other errors are retried up to MAX_NAVIGATION_ATTEMPTS.
@@ -447,7 +447,7 @@ class Crawler:
 
     def crawl(self, site: DVSupportSite, geolocation: str, trial: int) -> RawTrial:
         """
-        Crawl one site at one geolocation and return its raw trial.
+        Crawls one site at one geolocation and returns its raw trial.
 
         Args:
             site: The DV support site to crawl.

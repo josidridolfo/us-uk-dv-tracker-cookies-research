@@ -66,7 +66,7 @@ class DistributionSummary:
         cls, values: list[float], *, percentiles: tuple[int, ...] = DEFAULT_PERCENTILES
     ) -> DistributionSummary:
         """
-        Summarise one sample with median, IQR, min, max, and selected percentiles.
+        Summarises one sample with median, IQR, min, max, and selected percentiles.
 
         Args:
             values: The sample values; an empty sample yields a zeroed summary.

@@ -52,7 +52,7 @@ class AnalyzedRequest:
         radar: TrackerRadar,
     ) -> AnalyzedRequest:
         """
-        Derive the party and tracker classification for a raw request.
+        Derives the party and tracker classification for a raw request.
 
         Args:
             raw: The captured raw request.
@@ -84,7 +84,7 @@ class AnalyzedRequest:
     @staticmethod
     def tracker_source_label(*, ep_hit: bool, ddg_hit: bool) -> str:
         """
-        Label which block lists matched a request host.
+        Labels which block lists matched a request host.
 
         Args:
             ep_hit: Whether the EasyPrivacy matcher matched.
@@ -144,7 +144,7 @@ class AnalyzedCookie:
         cls, raw: RawCookie, cookie_db: CookieDatabase, page_origin_domain: str
     ) -> AnalyzedCookie:
         """
-        Derive the party and classification flags for a raw cookie.
+        Derives the party and classification flags for a raw cookie.
 
         Args:
             raw: The captured raw cookie.
@@ -205,7 +205,7 @@ class AnalyzedTrial:
         consentomatic_bundle: object | None = None,
     ) -> AnalyzedTrial:
         """
-        Derive the analyzed products of one raw trial.
+        Derives the analyzed products of one raw trial.
 
         Args:
             raw_trial: The raw trial to analyze.

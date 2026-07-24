@@ -33,7 +33,7 @@ class EasyPrivacyMatcher:
     @staticmethod
     def parse_host_rule(rule: str) -> str | None:
         """
-        Extract the host from a `||host^...` rule.
+        Extracts the host from a `||host^...` rule.
 
         Args:
             rule: One EasyPrivacy rule line beginning with the host-rule prefix.
@@ -58,7 +58,7 @@ class EasyPrivacyMatcher:
     @classmethod
     def from_snapshot(cls, path: Path) -> EasyPrivacyMatcher:
         """
-        Load the host rules from an EasyPrivacy snapshot.
+        Loads the host rules from an EasyPrivacy snapshot.
 
         Args:
             path: Path to the EasyPrivacy text snapshot.

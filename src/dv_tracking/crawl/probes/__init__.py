@@ -13,7 +13,7 @@ PROBES_DIR: Path = Path(__file__).parent
 
 def read_probe(name: str) -> str:
     """
-    Read a probe's JavaScript source from the probes directory.
+    Reads a probe's JavaScript source from the probes directory.
 
     Args:
         name: The probe filename, e.g. "tcf_ping.js".

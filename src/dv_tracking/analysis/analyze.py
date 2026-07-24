@@ -35,7 +35,7 @@ DEFAULT_TRACKER_RADAR_INDEX_PATH: Path = TRACKER_LISTS_DIR / "ddg_tracker_radar"
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     """
-    Parse and validate the dv-analyze command-line arguments.
+    Parses and validates the dv-analyze command-line arguments.
 
     Args:
         argv: The argument vector; defaults to sys.argv when None.
@@ -65,7 +65,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """
-    Analyze two explicit runs of the raw crawl and write the parquet outputs and the LaTeX summary table.
+    Analyzes two explicit runs of the raw crawl and writes the parquet outputs and the LaTeX summary table.
 
     Each --run selects one (crawl-date, geolocation) cell directory under the raw
     root; the two runs are classified independently and compared side by side.

@@ -27,7 +27,7 @@ class RawRequest:
     @classmethod
     def from_dict(cls, mapping: dict) -> RawRequest:
         """
-        Build a raw request from a decoded JSON object.
+        Builds a raw request from a decoded JSON object.
 
         Args:
             mapping: The decoded request record; unknown keys are dropped.
@@ -54,7 +54,7 @@ class RawCookie:
     @classmethod
     def from_dict(cls, mapping: dict) -> RawCookie:
         """
-        Build a raw cookie from a decoded JSON object.
+        Builds a raw cookie from a decoded JSON object.
 
         Args:
             mapping: The decoded cookie record; unknown keys are dropped.
@@ -66,7 +66,7 @@ class RawCookie:
     @classmethod
     def from_playwright(cls, raw: dict) -> RawCookie:
         """
-        Map a Playwright cookie dict to a RawCookie, storing the value verbatim.
+        Maps a Playwright cookie dict to a RawCookie, storing the value verbatim.
 
         Args:
             raw: One cookie dict as returned by BrowserContext.cookies().
@@ -197,7 +197,7 @@ class RawTrial:
     @classmethod
     def from_dict(cls, mapping: dict) -> RawTrial:
         """
-        Build a raw trial from a decoded JSON object with embedded records.
+        Builds a raw trial from a decoded JSON object with embedded records.
 
         Args:
             mapping: The decoded trial record; unknown keys are dropped.
@@ -273,7 +273,7 @@ class ConsentomaticBundle:
     @classmethod
     def from_dict(cls, mapping: dict) -> ConsentomaticBundle:
         """
-        Build a Consent-O-Matic bundle from a decoded JSON object.
+        Builds a Consent-O-Matic bundle from a decoded JSON object.
 
         Args:
             mapping: The decoded bundle record; unknown keys are dropped.
@@ -288,7 +288,7 @@ class ConsentomaticBundle:
     @classmethod
     def from_rules_file(cls, path: Path) -> ConsentomaticBundle | None:
         """
-        Read the Consent-O-Matic Rules.json and collect its rule identifiers.
+        Reads the Consent-O-Matic Rules.json and collects its rule identifiers.
 
         Args:
             path: Path to the Rules.json file, whose top-level keys name the rules.

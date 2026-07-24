@@ -28,7 +28,7 @@ class LatexTable:
         header_overrides: dict[str, str] | None = None,
     ) -> None:
         """
-        Bind the table to a frame and its rendering configuration.
+        Binds the table to a frame and its rendering configuration.
 
         Args:
             frame: The DataFrame to render, one output row per frame row.
@@ -78,7 +78,7 @@ class LatexTable:
 
     def render_cell(self, column: str, value: object) -> str:
         """
-        Render one cell value for its column.
+        Renders one cell value for its column.
 
         Args:
             column: The column the value belongs to.
@@ -115,7 +115,7 @@ class LatexTable:
 
     def to_latex(self) -> str:
         """
-        Render the full LaTeX table environment.
+        Renders the full LaTeX table environment.
 
         Args:
             None
@@ -141,7 +141,7 @@ class LatexTable:
 
     def write(self, path: Path) -> Path:
         """
-        Write the rendered table to a path.
+        Writes the rendered table to a path.
 
         Args:
             path: The file path to write.

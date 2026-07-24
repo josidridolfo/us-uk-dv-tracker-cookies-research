@@ -58,7 +58,7 @@ class HostingPlatformClassifier:
     @staticmethod
     def vendor_host_signal(third_party_hosts: Iterable[str]) -> HostingPlatform | None:
         """
-        Match a third-party request host against the vendor CDN suffixes.
+        Matches a third-party request host against the vendor CDN suffixes.
 
         Args:
             third_party_hosts: The third-party request hosts observed.
@@ -75,7 +75,7 @@ class HostingPlatformClassifier:
     @staticmethod
     def wordpress_path_signal(first_party_urls: Iterable[str]) -> HostingPlatform | None:
         """
-        Match first-party URL paths against the self-hosted WordPress tells.
+        Matches first-party URL paths against the self-hosted WordPress tells.
 
         Args:
             first_party_urls: The first-party request URLs observed.
@@ -93,7 +93,7 @@ class HostingPlatformClassifier:
     @staticmethod
     def cookie_name_signal(first_party_cookie_names: Iterable[str]) -> HostingPlatform | None:
         """
-        Match first-party cookie names against the platform cookie tells.
+        Matches first-party cookie names against the platform cookie tells.
 
         Args:
             first_party_cookie_names: The first-party cookie names observed.
@@ -111,7 +111,7 @@ class HostingPlatformClassifier:
         self, requests: Iterable[AnalyzedRequest], cookies: Iterable[AnalyzedCookie]
     ) -> HostingPlatform:
         """
-        Infer the hosting platform from the request trace and first-party cookies.
+        Infers the hosting platform from the request trace and first-party cookies.
 
         Args:
             requests: The analyzed requests for one site visit.
