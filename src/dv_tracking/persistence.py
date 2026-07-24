@@ -1,9 +1,8 @@
 """
 Per-trial raw persistence.
 
-A RawStore owns the on-disk layout for raw trials; the layout spans several
-inputs and the store is the single writer, so persistence is a store object
-rather than a method on the record. RawTrial.from_disk reads a trial back.
+RawStore reads and writes raw trials under a per-cell directory tree;
+RawTrial.from_disk reads one trial back from its directory.
 
 On-disk layout:
     <raw_root>/<crawl_date>_<geolocation>/<site_id>/trial_<N>/{metadata.json, requests.jsonl, cookies.jsonl}
@@ -99,23 +98,24 @@ class RawStore:
         """
         return RawTrial.from_disk(trial_dir)
 
-    def iter_trials(self) -> Iterator[RawTrial]:
+    def iter_run(self, crawl_date: str, geolocation: str) -> Iterator[RawTrial]:
         """
-        Yield every raw trial saved under the root, in cell/site/trial order.
+        Yield the raw trials of exactly one run's cell directory, in site/trial order.
 
-        Assumes a single crawl per geolocation under raw_root; multiple crawls for
-        one geolocation pool across runs and corrupt the 15s-dwell collapse.
+        Reads only <raw_root>/<crawl_date>_<geolocation>/; the directory name
+        fixes the geolocation, so no per-trial geolocation guard is applied.
 
         Args:
-            None
+            crawl_date: The crawl date selecting the cell directory.
+            geolocation: The geolocation selecting the cell directory.
         Returns:
-            trials: An iterator over the readable raw trials; unreadable dirs are skipped.
+            trials: An iterator over the readable raw trials in that one cell; unreadable dirs skipped.
         """
-        if not self.raw_root.is_dir():
+        cell_dir = self.raw_root / f"{crawl_date}_{geolocation}"
+        if not cell_dir.is_dir():
             return
-        for cell_dir in sorted(path for path in self.raw_root.iterdir() if path.is_dir()):
-            for site_dir in sorted(path for path in cell_dir.iterdir() if path.is_dir()):
-                for trial_dir in sorted(path for path in site_dir.iterdir() if path.is_dir()):
-                    trial = RawTrial.from_disk(trial_dir)
-                    if trial is not None:
-                        yield trial
+        for site_dir in sorted(path for path in cell_dir.iterdir() if path.is_dir()):
+            for trial_dir in sorted(path for path in site_dir.iterdir() if path.is_dir()):
+                trial = RawTrial.from_disk(trial_dir)
+                if trial is not None:
+                    yield trial

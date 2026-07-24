@@ -1,8 +1,7 @@
 """
 Descriptive statistics for the per-site privacy findings.
 
-Median / IQR / min / max / selected percentiles and simple proportions. This
-study is descriptive only: no inferential tests, no confidence intervals.
+Median / IQR / min / max / selected percentiles and simple proportions; no inferential tests, no confidence intervals.
 """
 
 from __future__ import annotations

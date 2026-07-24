@@ -1,10 +1,10 @@
 """
-Parquet writers for the analysis-facing outputs (v1).
+Parquet writers for the analysis-facing outputs.
 
-One parquet per (output, crawl_date):
-    per_site_privacy_findings_<crawl_date>.parquet   one row per (site, trial)
-    per_cookie_findings_<crawl_date>.parquet         one row per cookie (classification)
-    cookie_exfiltration_edges_<crawl_date>.parquet   one row per exfiltration edge
+One parquet per (output, crawl_date, geolocation):
+    per_site_privacy_findings_<crawl_date>_<geolocation>.parquet   one row per (site, trial)
+    per_cookie_findings_<crawl_date>_<geolocation>.parquet         one row per cookie (classification)
+    cookie_exfiltration_edges_<crawl_date>_<geolocation>.parquet   one row per exfiltration edge
 
 Each per-cookie / per-edge row is stamped with (site_id, geolocation, trial,
 crawl_date) at the write layer so the pooled row stays attributable to its trial.
@@ -28,7 +28,7 @@ COOKIE_EXFILTRATION_PREFIX: str = "cookie_exfiltration_edges"
 
 
 class FindingsParquetStore:
-    """Writes the per-site findings and per-cookie exfiltration parquet outputs (v1)."""
+    """Write the per-site findings and per-cookie exfiltration parquet outputs."""
 
     def __init__(self, out_dir: Path) -> None:
         """
@@ -41,28 +41,34 @@ class FindingsParquetStore:
         """
         self.out_dir = out_dir
 
-    def save_site_findings(self, findings: list[SitePrivacyFindings], crawl_date: str) -> Path:
+    def save_site_findings(
+        self, findings: list[SitePrivacyFindings], crawl_date: str, geolocation: str
+    ) -> Path:
         """
-        Write the per-site findings for one crawl date as a date-suffixed parquet.
+        Write the per-site findings for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             findings: The per-site-per-trial findings rows.
             crawl_date: The crawl date used in the filename.
+            geolocation: The geolocation used in the filename.
         Returns:
             path: The parquet path written.
         """
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        path = self.out_dir / f"{SITE_FINDINGS_PREFIX}_{crawl_date}.parquet"
+        path = self.out_dir / f"{SITE_FINDINGS_PREFIX}_{crawl_date}_{geolocation}.parquet"
         SitePrivacyFindings.to_dataframe(findings).write_parquet(path)
         return path
 
-    def save_cookie_findings(self, analyzed_trials: list[AnalyzedTrial], crawl_date: str) -> Path:
+    def save_cookie_findings(
+        self, analyzed_trials: list[AnalyzedTrial], crawl_date: str, geolocation: str
+    ) -> Path:
         """
-        Write the per-cookie classification census for one crawl date as a date-suffixed parquet.
+        Write the per-cookie classification census for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             analyzed_trials: The analyzed trials whose cookies are enumerated.
             crawl_date: The crawl date stamped on every cookie and used in the filename.
+            geolocation: The geolocation used in the filename.
         Returns:
             path: The parquet path written.
         """
@@ -92,18 +98,21 @@ class FindingsParquetStore:
                         "crawl_date": crawl_date,
                     }
                 )
-        path = self.out_dir / f"{COOKIE_FINDINGS_PREFIX}_{crawl_date}.parquet"
+        path = self.out_dir / f"{COOKIE_FINDINGS_PREFIX}_{crawl_date}_{geolocation}.parquet"
         frame = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
         frame.write_parquet(path)
         return path
 
-    def save_exfiltration_edges(self, analyzed_trials: list[AnalyzedTrial], crawl_date: str) -> Path:
+    def save_exfiltration_edges(
+        self, analyzed_trials: list[AnalyzedTrial], crawl_date: str, geolocation: str
+    ) -> Path:
         """
-        Write the URL-channel exfiltration edges for one crawl date as a date-suffixed parquet.
+        Write the URL-channel exfiltration edges for one run as a date-and-geolocation-suffixed parquet.
 
         Args:
             analyzed_trials: The analyzed trials scanned for exfiltration edges.
             crawl_date: The crawl date stamped on every edge and used in the filename.
+            geolocation: The geolocation used in the filename.
         Returns:
             path: The parquet path written.
         """
@@ -117,7 +126,7 @@ class FindingsParquetStore:
                 row["trial"] = analyzed.trial
                 row["crawl_date"] = crawl_date
                 rows.append(row)
-        path = self.out_dir / f"{COOKIE_EXFILTRATION_PREFIX}_{crawl_date}.parquet"
+        path = self.out_dir / f"{COOKIE_EXFILTRATION_PREFIX}_{crawl_date}_{geolocation}.parquet"
         frame = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
         frame.write_parquet(path)
         return path

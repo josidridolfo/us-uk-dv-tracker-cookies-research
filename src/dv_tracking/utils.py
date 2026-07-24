@@ -96,6 +96,68 @@ def keep_known_fields(cls: type, mapping: dict) -> dict:
     return {key: value for key, value in mapping.items() if key in allowed}
 
 
+LATEX_SPECIAL_CHARS: dict[str, str] = {
+    "\\": r"\textbackslash{}",
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+
+def escape_latex(text: str) -> str:
+    """
+    Escape the LaTeX special characters in a string for use in a table cell.
+
+    A single pass over the source characters, so braces introduced by the
+    backslash replacement are never re-escaped.
+
+    Args:
+        text: The raw string to escape.
+    Returns:
+        escaped: The string with LaTeX special characters replaced by their escaped forms.
+    """
+    escaped = "".join(LATEX_SPECIAL_CHARS.get(character, character) for character in text)
+    return escaped
+
+
+def format_latex_number(value: float | int, decimals: int) -> str:
+    """
+    Format a numeric value at a fixed number of decimal places.
+
+    Args:
+        value: The numeric value to format.
+        decimals: The number of decimal places to render.
+    Returns:
+        formatted: The value as a fixed-point string, with no percent sign and no escaping.
+    """
+    formatted = f"{value:.{decimals}f}"
+    return formatted
+
+
+def latex_column_spec(alignments: tuple[str, ...]) -> str:
+    """
+    Join per-column alignment letters into a tabular column specification.
+
+    Args:
+        alignments: One alignment letter per column, each in {"l", "r", "c"}.
+    Returns:
+        spec: The concatenated column specification, e.g. ("l", "r", "r") -> "lrr".
+    Raises:
+        ValueError: When any element is not one of "l", "r", or "c".
+    """
+    for alignment in alignments:
+        if alignment not in {"l", "r", "c"}:
+            raise ValueError(f"invalid column alignment: {alignment!r}")
+    spec = "".join(alignments)
+    return spec
+
+
 def read_jsonl(path: Path, build: Callable[[dict], object]) -> list:
     """
     Read a JSONL file into a list of records via a builder.

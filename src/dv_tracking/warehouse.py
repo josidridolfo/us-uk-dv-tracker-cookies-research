@@ -1,11 +1,9 @@
 """
-DuckDB warehouse for crawl outputs (v1).
+DuckDB warehouse for crawl outputs.
 
-Layered raw -> stg -> int -> marts. consolidate_raw folds the per-trial JSONL
-under a RawStore into per-cell metadata/requests/cookies parquet; build runs
-sql/<layer>/*.sql in layer order as CREATE OR REPLACE, so re-running is
-idempotent. The raw SQL globs the parquet by a path relative to the
-consolidated root, so build chdirs there before executing.
+Builds layered views raw -> stg -> int -> marts. consolidate_raw folds the
+per-trial JSONL under a RawStore into per-cell parquet; build runs each layer's
+SQL as CREATE OR REPLACE, so re-running is idempotent.
 """
 
 from __future__ import annotations
