@@ -52,6 +52,8 @@ class SitePrivacyFindings:
     classified_cookie_count: int
     unknown_cookie_count: int
     tracking_cookie_count: int
+    non_essential_cookie_count: int
+    necessary_but_long_lived_cookie_count: int
     eprivacy_5_3_candidate_count: int
     eprivacy_5_3_vendors: tuple[str, ...]
 
@@ -64,6 +66,10 @@ class SitePrivacyFindings:
     both_lists_request_count: int
 
     banner_present: bool
+    # Spec-verified CMP signal (TCF/USP/GPP APIs or a Consent-O-Matic selector match).
+    banner_api_verified: bool
+    # DOM/hostname-only detection with no API confirmation; the unvalidated bucket.
+    banner_heuristic_only: bool
     banner_primary_method: str | None
     cmp_vendor: str | None
     hosting_platform: str
@@ -135,6 +141,8 @@ class SitePrivacyFindings:
             elif frame.schema[column] == pl.Boolean:
                 aggregations.append(pl.col(column).any().alias(column))
             else:
+                # Longest-dwell collapse: numeric/identity cols take the highest-numbered
+                # non-blocked trial; booleans any-True, blocked all-True.
                 aggregations.append(
                     pl.col(column).sort_by(order, descending=descending).first().alias(column)
                 )
@@ -188,12 +196,22 @@ class SitePrivacyFindings:
             )
         )
 
+        # Category-derived visit context (observed behaviour), not a legal Art 9 determination.
         art_9_implicated = site.category in ART9_IMPLICATED_CATEGORIES
         # Scoped to implicated sites: the art_9_ prefix means "on an Art 9 visit".
+        # ePrivacy 5(3) candidates only (analytics/marketing); narrower than tracking_cookie_count.
         tracking_cookie_present = art_9_implicated and any(
             cookie.is_eprivacy_5_3_candidate for cookie in cookies
         )
         tracker_request_present = art_9_implicated and bool(tracker_requests)
+
+        banner_api_verified = (
+            banner.tcf_present
+            or banner.consentomatic_matched
+            or banner.usp_api_present
+            or banner.gpp_api_present
+        )
+        banner_heuristic_only = banner.banner_present and not banner_api_verified
 
         return cls(
             site_id=site.site_id,
@@ -209,10 +227,18 @@ class SitePrivacyFindings:
             third_party_cookie_count=sum(1 for cookie in cookies if cookie.is_third_party),
             classified_cookie_count=classified_cookie_count,
             unknown_cookie_count=len(cookies) - classified_cookie_count,
+            # classification_matched and not strictly-necessary: includes analytics/marketing/
+            # preferences and matched-but-unmapped; broader than the ePrivacy 5(3) subset.
             tracking_cookie_count=sum(
                 1
                 for cookie in cookies
                 if cookie.classification_matched and not cookie.is_strictly_necessary
+            ),
+            non_essential_cookie_count=sum(1 for cookie in cookies if not cookie.is_essential),
+            necessary_but_long_lived_cookie_count=sum(
+                1
+                for cookie in cookies
+                if cookie.is_strictly_necessary and not cookie.is_essential
             ),
             eprivacy_5_3_candidate_count=sum(
                 1 for cookie in cookies if cookie.is_eprivacy_5_3_candidate
@@ -232,6 +258,8 @@ class SitePrivacyFindings:
                 1 for request in tracker_requests if request.tracker_source == "both"
             ),
             banner_present=banner.banner_present,
+            banner_api_verified=banner_api_verified,
+            banner_heuristic_only=banner_heuristic_only,
             banner_primary_method=banner.primary_method,
             cmp_vendor=banner.cmp_vendor,
             hosting_platform=analyzed_trial.hosting_platform.platform,
@@ -245,5 +273,7 @@ class SitePrivacyFindings:
             art_9_tier=cls.art_9_tier_for_category(site.category),
             art_9_tracking_cookie_present=tracking_cookie_present,
             art_9_tracker_request_present=tracker_request_present,
+            # Observed behaviour: a tracker request (transmission) or a tracking cookie being set
+            # (local storage, not itself transmitted); not a compliance verdict.
             art_9_transmission_present=tracking_cookie_present or tracker_request_present,
         )

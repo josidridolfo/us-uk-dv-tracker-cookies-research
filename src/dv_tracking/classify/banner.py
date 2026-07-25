@@ -238,6 +238,9 @@ class BannerClassifier:
         banner_type = self.classify_banner_type(consentomatic_evidence or heuristic_evidence)
 
         return BannerFinding(
+            # Union of all signals (incl. the p=0.82 DOM heuristic and the asset-loaded hostname
+            # tell); NOT a verified-CMP rate. The API-verified vs heuristic split is carried on
+            # SitePrivacyFindings.
             banner_present=bool(methods),
             detection_methods=tuple(methods),
             primary_method=self.pick_primary_method(methods),
@@ -247,6 +250,8 @@ class BannerClassifier:
             tcf_present=tcf_present,
             consentomatic_matched=consentomatic_matched,
             heuristic_matched=heuristic_matched,
+            # usp/gpp presence is recorded but not added to methods; SitePrivacyFindings.
+            # banner_api_verified folds them into the API-verified signal.
             usp_api_present=banner_signals.usp_api_present if banner_signals else False,
             gpp_api_present=banner_signals.gpp_api_present if banner_signals else False,
             banner_type=banner_type,

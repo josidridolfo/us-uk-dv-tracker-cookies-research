@@ -112,9 +112,11 @@ def main(argv: list[str] | None = None) -> int:
             run_findings.append(SitePrivacyFindings.from_trial(analyzed, site, crawl_date=crawl_date))
         site_path = findings_store.save_site_findings(run_findings, crawl_date, geolocation)
         cookie_path = findings_store.save_cookie_findings(run_trials, crawl_date, geolocation)
+        request_path = findings_store.save_request_findings(run_trials, crawl_date, geolocation)
         exfil_path = findings_store.save_exfiltration_edges(run_trials, crawl_date, geolocation)
         print(f"wrote {site_path}")
         print(f"wrote {cookie_path}")
+        print(f"wrote {request_path}")
         print(f"wrote {exfil_path}")
         summary_runs.append(SummaryRun(run_findings, crawl_date, geolocation))
 

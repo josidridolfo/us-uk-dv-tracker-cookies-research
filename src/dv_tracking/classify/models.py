@@ -119,6 +119,9 @@ class AnalyzedCookie:
     same_site: str
     value: str
     registered_domain: str
+    # The cookie's domain party (first vs third party by registered domain). A cookie set under the
+    # host domain -- even by a third-party script -- is first-party; a first-party value that then
+    # reaches a third party is a first-party-context-third-party case, captured as an exfiltration edge.
     is_third_party: bool
     classification_matched: bool
     cookie_category: str
@@ -150,6 +153,8 @@ class AnalyzedCookie:
         *, is_strictly_necessary: bool, is_session: bool, expires_unix: float, now: float
     ) -> bool:
         """Strictly necessary and short-lived by observed lifetime (session or expiring within the window)."""
+        # Already-expired cookies (expiry in the past) also fall here -- treated short-lived,
+        # hence essential when strictly necessary.
         short_lived = is_session or expires_unix <= now + SHORT_LIVED_MAX_AGE_SECONDS
         return is_strictly_necessary and short_lived
 
@@ -200,12 +205,17 @@ class AnalyzedCookie:
 
 @dataclass(frozen=True)
 class AnalyzedTrial:
-    """The analyzed products of one raw trial: analyzed requests, cookies, banner, platform."""
+    """The analyzed products of one raw trial: analyzed requests, cookies, banner, platform.
+
+    The crawl_start_utc instant is carried through so every row-level output stays self-auditable;
+    the essential-cookie 30-day cutoff is measured from this instant, not the crawl date.
+    """
 
     site_id: str
     url: str
     geolocation: str
     trial: int
+    crawl_start_utc: str
     blocked: bool
     analyzed_requests: tuple[AnalyzedRequest, ...]
     analyzed_cookies: tuple[AnalyzedCookie, ...]
@@ -265,6 +275,7 @@ class AnalyzedTrial:
             url=raw_trial.url,
             geolocation=raw_trial.geolocation,
             trial=raw_trial.trial,
+            crawl_start_utc=raw_trial.crawl_start_utc,
             blocked=raw_trial.blocked,
             analyzed_requests=analyzed_requests,
             analyzed_cookies=analyzed_cookies,

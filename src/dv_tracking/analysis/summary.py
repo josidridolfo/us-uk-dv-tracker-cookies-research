@@ -15,6 +15,7 @@ import polars as pl
 
 from dv_tracking.analysis.models import SitePrivacyFindings
 from dv_tracking.analysis.statistics import DistributionSummary, proportion
+from dv_tracking.constants import TRACKER_LIST_SNAPSHOTS
 from dv_tracking.latex import LatexTable
 
 SUMMARY_CAPTION: str = (
@@ -30,8 +31,10 @@ SUMMARY_HEADERS: dict[str, str] = {
     "art_9_transmission_pct": "Art 9 transmit %",
     "eprivacy_candidate_site_count": "ePrivacy sites",
     "eprivacy_candidate_pct": "ePrivacy %",
-    "banner_present_count": "Banner sites",
-    "banner_present_pct": "Banner %",
+    "banner_api_verified_count": "Banner (API) sites",
+    "banner_api_verified_pct": "Banner (API) %",
+    "banner_heuristic_count": "Banner (heuristic) sites",
+    "banner_heuristic_pct": "Banner (heuristic) %",
     "tracker_request_median": "Tracker reqs (median)",
     "third_party_request_median": "3rd-party reqs (median)",
     "total_cookie_median": "Cookies (median)",
@@ -40,7 +43,8 @@ SUMMARY_HEADERS: dict[str, str] = {
 SUMMARY_COLUMN_FORMATS: dict[str, int] = {
     "art_9_transmission_pct": 1,
     "eprivacy_candidate_pct": 1,
-    "banner_present_pct": 1,
+    "banner_api_verified_pct": 1,
+    "banner_heuristic_pct": 1,
     "tracker_request_median": 1,
     "third_party_request_median": 1,
     "total_cookie_median": 1,
@@ -79,8 +83,10 @@ class GeolocationSummaryRow:
     art_9_transmission_pct: float
     eprivacy_candidate_site_count: int
     eprivacy_candidate_pct: float
-    banner_present_count: int
-    banner_present_pct: float
+    banner_api_verified_count: int
+    banner_api_verified_pct: float
+    banner_heuristic_count: int
+    banner_heuristic_pct: float
     tracker_request_median: float
     third_party_request_median: float
     total_cookie_median: float
@@ -91,7 +97,9 @@ class GeolocationSummaryRow:
         Summarises one run's site-level frame into a descriptive row.
 
         Art 9 transmission is a rate over the Art-9-implicated denominator, not
-        all sites; ePrivacy and banner rates are over all successful sites.
+        all sites; ePrivacy and the two banner rates are over all successful sites.
+        The banner rate is split into an API-verified rate and an unvalidated
+        heuristic-only rate; the union is never reported as a single figure.
 
         Args:
             run_label: The run's display label.
@@ -103,7 +111,8 @@ class GeolocationSummaryRow:
         implicated = SitePrivacyFindings.art_9_denominator(cell)
         transmission = int(cell.filter(pl.col("art_9_transmission_present")).height)
         eprivacy = int(cell.filter(pl.col("eprivacy_5_3_candidate_count") > 0).height)
-        banner = int(cell.filter(pl.col("banner_present")).height)
+        banner_api_verified = int(cell.filter(pl.col("banner_api_verified")).height)
+        banner_heuristic = int(cell.filter(pl.col("banner_heuristic_only")).height)
         return cls(
             run_label=run_label,
             site_count=site_count,
@@ -112,8 +121,10 @@ class GeolocationSummaryRow:
             art_9_transmission_pct=proportion(transmission, implicated) * 100,
             eprivacy_candidate_site_count=eprivacy,
             eprivacy_candidate_pct=proportion(eprivacy, site_count) * 100,
-            banner_present_count=banner,
-            banner_present_pct=proportion(banner, site_count) * 100,
+            banner_api_verified_count=banner_api_verified,
+            banner_api_verified_pct=proportion(banner_api_verified, site_count) * 100,
+            banner_heuristic_count=banner_heuristic,
+            banner_heuristic_pct=proportion(banner_heuristic, site_count) * 100,
             tracker_request_median=DistributionSummary.from_values(
                 cell.get_column("tracker_request_count").to_list()
             ).median,
@@ -173,12 +184,41 @@ class JurisdictionSummary:
             return pl.DataFrame()
         return pl.DataFrame([asdict(row) for row in self.rows], infer_schema_length=None)
 
-    def to_latex_table(self) -> LatexTable:
+    def provenance_comment(self) -> str:
+        """
+        The reproducibility provenance as LaTeX comment lines preceding the table.
+
+        Records both run labels with their site and Art-9-implicated denominators,
+        the pinned tracker-list snapshot versions, and the per-trial collapse rule.
+
+        Args:
+            None
+        Returns:
+            comment: The %-prefixed provenance lines, newline-joined.
+        """
+        lines = ["% jurisdiction summary provenance"]
+        for row in self.rows:
+            lines.append(
+                f"% run {row.run_label}: {row.site_count} sites, "
+                f"{row.art_9_implicated_count} Art-9-implicated (transmission denominator)"
+            )
+        for snapshot in TRACKER_LIST_SNAPSHOTS:
+            commit = snapshot.pinned_commit or "n/a"
+            lines.append(
+                f"% tracker list {snapshot.name}: snapshot {snapshot.snapshot_date}, commit {commit}"
+            )
+        lines.append(
+            "% per-trial rows collapse to one row per site at the highest non-blocked trial "
+            "(longest dwell); booleans any-True, blocked all-True, blocked dropped before rates"
+        )
+        return "\n".join(lines)
+
+    def to_latex_table(self, preamble: str | None = None) -> LatexTable:
         """
         The summary as a configured LatexTable.
 
         Args:
-            None
+            preamble: Text emitted before the table environment, or None.
         Returns:
             table: The LatexTable over the summary frame with the study's captions and headers.
         """
@@ -188,15 +228,16 @@ class JurisdictionSummary:
             label=SUMMARY_LABEL,
             column_formats=SUMMARY_COLUMN_FORMATS,
             header_overrides=SUMMARY_HEADERS,
+            preamble=preamble,
         )
 
     def write_latex(self, path: Path) -> Path:
         """
-        Writes the summary table as a LaTeX file.
+        Writes the summary table, preceded by its provenance comment, as a LaTeX file.
 
         Args:
             path: The file path to write.
         Returns:
             path: The path written.
         """
-        return self.to_latex_table().write(path)
+        return self.to_latex_table(preamble=self.provenance_comment()).write(path)

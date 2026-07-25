@@ -24,6 +24,8 @@ MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
 HASH_ENCODINGS: frozenset[str] = frozenset({"md5", "sha1", "sha256"})
 # Id separators, minus `.` -- keeps the dotted GA client id `<rand>.<ts>` one token.
 TOKEN_SEPARATOR_PATTERN: re.Pattern[str] = re.compile(r"[-_/:~|$+,;=&\s]+")
+# Characters of surrounding URL context kept on each side of the matched token in the excerpt.
+EXCERPT_MARGIN: int = 24
 
 
 @dataclass(frozen=True)
@@ -39,8 +41,13 @@ class ExfilEdge:
     dest_url: str
     encoding: str
     value_len: int
+    # full_value/value_component = per-user identifier bits; name_component = shared cookie name
+    # (property-level, e.g. _ga).
     match_kind: str
     matched_token: str
+    cookie_value: str
+    matched_offset: int
+    dest_url_excerpt: str
 
     @staticmethod
     def encode_variants(value: str) -> dict[str, str]:
@@ -160,6 +167,8 @@ class ExfilEdge:
             for needle, (cookie, encoding) in needles.items():
                 if cookie.registered_domain == request.registered_domain:
                     continue
+                # Hex digests are lowercase -> case-insensitive; base64/plaintext are
+                # case-sensitive -> matched verbatim.
                 searched = lowered if encoding in HASH_ENCODINGS else haystacks
                 if any(needle in haystack for haystack in searched):
                     destination = (cookie.name, request.host, request.registered_domain)
@@ -202,6 +211,34 @@ class ExfilEdge:
             )
         return list(edges.values())
 
+    @staticmethod
+    def locate_in_url(dest_url: str, matched_token: str, encoding: str) -> tuple[int, str]:
+        """
+        Locates the matched token in the destination URL and excerpts its surrounding context.
+
+        Searches the URL verbatim, then percent-decoded; hash encodings compare
+        case-insensitively, mirroring the lowered-search over HASH_ENCODINGS. The
+        excerpt is sliced from the same string the offset indexes into.
+
+        Args:
+            dest_url: The destination request URL the token was observed in.
+            matched_token: The needle or token that matched, as stored on the edge.
+            encoding: The encoding label the value matched under.
+        Returns:
+            location: The offset and surrounding excerpt, or (-1, leading excerpt) on no hit.
+        """
+        for form in (dest_url, unquote(dest_url)):
+            searched = form.lower() if encoding in HASH_ENCODINGS else form
+            offset = searched.find(matched_token)
+            if offset != -1:
+                start = max(0, offset - EXCERPT_MARGIN)
+                end = offset + len(matched_token) + EXCERPT_MARGIN
+                return offset, searched[start:end]
+        # Tries raw then percent-decoded, not parse_qs's '+'->space form; a token matched via a
+        # '+'-encoded query value falls to (-1, leading excerpt) -- evidence display only, never
+        # affects the count.
+        return -1, dest_url[: 2 * EXCERPT_MARGIN]
+
     @classmethod
     def build_edge(
         cls,
@@ -227,6 +264,7 @@ class ExfilEdge:
         Returns:
             edge: The exfiltration edge.
         """
+        matched_offset, dest_url_excerpt = cls.locate_in_url(dest_url, matched_token, encoding)
         return cls(
             cookie_name=cookie.name,
             cookie_registered_domain=cookie.registered_domain,
@@ -239,4 +277,7 @@ class ExfilEdge:
             value_len=len(cookie.value),
             match_kind=match_kind,
             matched_token=matched_token,
+            cookie_value=cookie.value,
+            matched_offset=matched_offset,
+            dest_url_excerpt=dest_url_excerpt,
         )
