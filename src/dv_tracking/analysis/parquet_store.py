@@ -90,6 +90,7 @@ class FindingsParquetStore:
                         "cookie_category": cookie.cookie_category,
                         "cookie_vendor": cookie.cookie_vendor,
                         "is_strictly_necessary": cookie.is_strictly_necessary,
+                        "is_essential": cookie.is_essential,
                         "is_eprivacy_5_3_candidate": cookie.is_eprivacy_5_3_candidate,
                         "has_identifier_value": cookie.has_identifier_value,
                         "site_id": analyzed.site_id,

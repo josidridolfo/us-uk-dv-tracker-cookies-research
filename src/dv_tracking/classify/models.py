@@ -10,6 +10,7 @@ carry them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
 # An identifier-like value: long enough, not purely numeric, with real variety.
 MINIMUM_IDENTIFIER_LENGTH: int = 8
 MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
+
+# Observed-lifetime cutoff separating short-lived from long-lived cookies (30 days).
+SHORT_LIVED_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,8 @@ class AnalyzedCookie:
     cookie_category: str
     cookie_vendor: str
     is_strictly_necessary: bool
+    # Strictly-necessary AND short-lived by observed lifetime; everything else is non-essential.
+    is_essential: bool
     is_eprivacy_5_3_candidate: bool
     has_identifier_value: bool
 
@@ -139,9 +145,17 @@ class AnalyzedCookie:
             and len(set(value)) >= MINIMUM_IDENTIFIER_DISTINCT_CHARS
         )
 
+    @staticmethod
+    def is_essential_cookie(
+        *, is_strictly_necessary: bool, is_session: bool, expires_unix: float, now: float
+    ) -> bool:
+        """Strictly necessary and short-lived by observed lifetime (session or expiring within the window)."""
+        short_lived = is_session or expires_unix <= now + SHORT_LIVED_MAX_AGE_SECONDS
+        return is_strictly_necessary and short_lived
+
     @classmethod
     def from_raw(
-        cls, raw: RawCookie, cookie_db: CookieDatabase, page_origin_domain: str
+        cls, raw: RawCookie, cookie_db: CookieDatabase, page_origin_domain: str, now: float
     ) -> AnalyzedCookie:
         """
         Derives the party and classification flags for a raw cookie.
@@ -150,6 +164,7 @@ class AnalyzedCookie:
             raw: The captured raw cookie.
             cookie_db: The cookie database used to classify the cookie name.
             page_origin_domain: The registered domain of the visited page.
+            now: The crawl instant (unix seconds) used as the essentiality reference.
         Returns:
             analyzed: The cookie carrying its derived party and classification.
         """
@@ -172,6 +187,12 @@ class AnalyzedCookie:
             cookie_category=classification.category,
             cookie_vendor=classification.vendor,
             is_strictly_necessary=classification.is_strictly_necessary,
+            is_essential=cls.is_essential_cookie(
+                is_strictly_necessary=classification.is_strictly_necessary,
+                is_session=raw.is_session,
+                expires_unix=raw.expires_unix,
+                now=now,
+            ),
             is_eprivacy_5_3_candidate=classification.is_eprivacy_5_3_candidate,
             has_identifier_value=cls.has_identifier(raw.value),
         )
@@ -224,8 +245,9 @@ class AnalyzedTrial:
             AnalyzedRequest.from_raw(request, page_origin_domain, ep_matcher, radar)
             for request in raw_trial.requests
         )
+        now = datetime.fromisoformat(raw_trial.crawl_start_utc).timestamp()
         analyzed_cookies = tuple(
-            AnalyzedCookie.from_raw(cookie, cookie_db, page_origin_domain)
+            AnalyzedCookie.from_raw(cookie, cookie_db, page_origin_domain, now)
             for cookie in raw_trial.cookies
         )
         third_party_hosts = [
