@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from dv_tracking import PROJECT_ROOT
+from dv_tracking.analysis.models import longest_dwell_trials
 from dv_tracking.analysis.statistics import percent, proportion
 
 DEFAULT_PROCESSED_DIR: Path = PROJECT_ROOT / "data" / "processed"
@@ -104,6 +105,12 @@ class MatcherComparison:
         name = f"{REQUEST_FINDINGS_PREFIX}_{crawl_date}_{geolocation}.parquet"
         baseline = pl.read_parquet(baseline_dir / name)
         faithful = pl.read_parquet(processed_dir / name)
+        # The parquet holds all three dwell trials; collapse to one dwell per site first to
+        # avoid n-tuple counting. One selector serves both frames (blocked is matcher-invariant).
+        selector = longest_dwell_trials(faithful)
+        keys = ["site_id", "geolocation", "trial"]
+        baseline = baseline.join(selector, on=keys, how="semi")
+        faithful = faithful.join(selector, on=keys, how="semi")
         return cls(
             geolocation=geolocation,
             host_only=CrossSourceSplit.from_request_frame(baseline),

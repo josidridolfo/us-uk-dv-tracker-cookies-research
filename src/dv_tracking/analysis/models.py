@@ -356,3 +356,26 @@ class SitePrivacyFindings:
             advertising_google_request_count=advertising_google_request_count,
             advertising_meta_request_count=advertising_meta_request_count,
         )
+
+
+def longest_dwell_trials(frame: pl.DataFrame) -> pl.DataFrame:
+    """
+    The one (site, geo, trial) triple to keep per site: the longest successful dwell.
+
+    Request-level twin of SitePrivacyFindings.site_level_frame's collapse rule: over
+    non-blocked rows only, take the highest trial number per (site_id, geolocation).
+    All-blocked sites have no non-blocked row and so drop out, matching summary's set.
+
+    Args:
+        frame: A per-request findings frame with site_id, geolocation, trial, blocked.
+    Returns:
+        selector: One row per surviving (site_id, geolocation) with its kept trial;
+            empty (with those columns) when the frame is empty.
+    """
+    if frame.is_empty():
+        return pl.DataFrame(schema={"site_id": pl.String, "geolocation": pl.String, "trial": pl.Int64})
+    return (
+        frame.filter(~pl.col("blocked"))
+        .group_by(["site_id", "geolocation"])
+        .agg(pl.col("trial").max())
+    )
