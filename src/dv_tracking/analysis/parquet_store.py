@@ -8,8 +8,8 @@ One parquet per (output, crawl_date, geolocation):
     cookie_exfiltration_edges_<crawl_date>_<geolocation>.parquet   one row per exfiltration edge
 
 Each per-cookie / per-request / per-edge row is stamped with (site_id, geolocation,
-trial, crawl_date, crawl_start_utc) at the write layer so the pooled row stays attributable
-to its trial and fully self-auditable (the essential-cookie cutoff resolves from crawl_start_utc).
+trial, crawl_date, crawl_start_utc, blocked) at the write layer so the pooled row stays
+attributable to its trial and fully self-auditable.
 """
 
 from __future__ import annotations
@@ -103,6 +103,7 @@ class FindingsParquetStore:
                         "trial": analyzed.trial,
                         "crawl_date": crawl_date,
                         "crawl_start_utc": analyzed.crawl_start_utc,
+                        "blocked": analyzed.blocked,
                     }
                 )
         path = self.out_dir / f"{COOKIE_FINDINGS_PREFIX}_{crawl_date}_{geolocation}.parquet"
@@ -136,6 +137,7 @@ class FindingsParquetStore:
                         "is_tracker": request.is_tracker,
                         "tracker_source": request.tracker_source,
                         "tracker_categories": list(request.tracker_categories),
+                        "tracker_owner": request.tracker_owner,
                         "method": request.method,
                         "resource_type": request.resource_type,
                         "site_id": analyzed.site_id,
@@ -143,6 +145,7 @@ class FindingsParquetStore:
                         "trial": analyzed.trial,
                         "crawl_date": crawl_date,
                         "crawl_start_utc": analyzed.crawl_start_utc,
+                        "blocked": analyzed.blocked,
                     }
                 )
         path = self.out_dir / f"{REQUEST_FINDINGS_PREFIX}_{crawl_date}_{geolocation}.parquet"
@@ -175,6 +178,7 @@ class FindingsParquetStore:
                 row["trial"] = analyzed.trial
                 row["crawl_date"] = crawl_date
                 row["crawl_start_utc"] = analyzed.crawl_start_utc
+                row["blocked"] = analyzed.blocked
                 rows.append(row)
         path = self.out_dir / f"{COOKIE_EXFILTRATION_PREFIX}_{crawl_date}_{geolocation}.parquet"
         frame = pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()

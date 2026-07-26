@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 
 from dv_tracking import PROJECT_ROOT
+from dv_tracking.analysis.matcher_comparison import DEFAULT_BASELINE_DIR, MatcherComparison
 from dv_tracking.analysis.models import SitePrivacyFindings
 from dv_tracking.analysis.parquet_store import FindingsParquetStore
 from dv_tracking.analysis.summary import JurisdictionSummary, SummaryRun
@@ -118,6 +119,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {cookie_path}")
         print(f"wrote {request_path}")
         print(f"wrote {exfil_path}")
+        baseline_path = DEFAULT_BASELINE_DIR / f"per_request_findings_{crawl_date}_{geolocation}.parquet"
+        if baseline_path.is_file():
+            comparison = MatcherComparison.from_parquet(
+                geolocation, crawl_date, processed_dir=arguments.output_dir
+            )
+            print(f"host-only vs faithful EasyPrivacy comparison ({crawl_date} {geolocation}):")
+            print(comparison.render())
+            comparison_path = comparison.write_parquet(
+                arguments.output_dir / f"matcher_comparison_{crawl_date}_{geolocation}.parquet"
+            )
+            print(f"wrote {comparison_path}")
         summary_runs.append(SummaryRun(run_findings, crawl_date, geolocation))
 
     summary = JurisdictionSummary.from_runs(summary_runs[0], summary_runs[1])
@@ -129,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         arguments.output_dir / f"jurisdiction_summary_{date_a}_{geo_a}__{date_b}_{geo_b}.tex"
     )
     print(f"wrote {tex_path}")
+    parquet_path = summary.write_parquet(
+        arguments.output_dir / f"jurisdiction_summary_{date_a}_{geo_a}__{date_b}_{geo_b}.parquet"
+    )
+    print(f"wrote {parquet_path}")
     return 0
 
 

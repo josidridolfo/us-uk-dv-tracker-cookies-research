@@ -19,10 +19,13 @@ snapshots are vendored into this repo with the version + date recorded.
 - Source: https://github.com/easylist/easylist
 - Pinned commit: `d4a1b7e93c8f5a2d6b9e3c7a1f4e8b2d5c6f9a1e`
 - Vendored file: `tracker_lists/easyprivacy/easyprivacy.txt` (compiled
-  output; 51,154 host-rule lines beginning with `||`).
+  output; 55,432 non-comment rule lines of all types).
 - Notes: both host-anchored (`||host^`) and path-anchored
-  (`||host/path...`) rules are used. Element-hiding and exception
-  rules are ignored.
+  (`||host/path...`) rules are used.
+- Matcher engine: adblock-rust (`adblock==0.6.0`, self-contained wheel),
+  honouring URL, party, resource type, `$domain=` scope, and `@@` exceptions.
+  Replaces the earlier adblockparser + pyre2 matcher; verdicts must be
+  recomputed by re-running the analysis.
 - License: GPLv3
 
 ## Open Cookie Database

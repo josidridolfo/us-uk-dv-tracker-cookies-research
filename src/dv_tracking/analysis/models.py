@@ -12,7 +12,8 @@ from dataclasses import asdict, dataclass
 
 import polars as pl
 
-from dv_tracking.classify.models import AnalyzedTrial
+from dv_tracking.analysis.cookie_exfiltration import ExfilEdge
+from dv_tracking.classify.models import AnalyzedRequest, AnalyzedTrial
 from dv_tracking.sites import DVSupportSite
 
 # Direct-service categories: a visit strongly implies the visitor is seeking help,
@@ -31,6 +32,24 @@ IDENTITY_SPECIFIC_CATEGORIES: frozenset[str] = frozenset(
 ART9_IMPLICATED_CATEGORIES: frozenset[str] = (
     DIRECT_SERVICE_CATEGORIES | IDENTITY_SPECIFIC_CATEGORIES
 )
+
+# Advertising / cross-site band: DDG categories that mark ad-motivated or pixel tracking.
+ADVERTISING_TRACKER_CATEGORIES: frozenset[str] = frozenset(
+    {"Advertising", "Ad Motivated Tracking", "Ad Fraud", "Action Pixels"}
+)
+# Analytics / measurement band: DDG categories for audience and behaviour measurement.
+# The two bands overlap (a request may carry both) and are never summed.
+ANALYTICS_TRACKER_CATEGORIES: frozenset[str] = frozenset(
+    {"Analytics", "Audience Measurement", "Third-Party Analytics Marketing", "Session Replay"}
+)
+
+GOOGLE_OWNER_NAME: str = "Google"
+META_OWNER_NAMES: frozenset[str] = frozenset({"Facebook", "Meta"})
+
+
+def in_band(request: AnalyzedRequest, band: frozenset[str]) -> bool:
+    """True when a request carries any tracker category in the given band."""
+    return bool(set(request.tracker_categories) & band)
 
 
 @dataclass(frozen=True)
@@ -82,6 +101,18 @@ class SitePrivacyFindings:
     art_9_tracking_cookie_present: bool
     art_9_tracker_request_present: bool
     art_9_transmission_present: bool
+
+    exfiltration_edge_count: int = 0
+    has_exfiltration: bool = False
+
+    # Three overlapping bands over the third-party trackers; longest-dwell counts, never summed.
+    advertising_tracker_request_count: int = 0
+    analytics_tracker_request_count: int = 0
+    # "Other": a third-party tracker in neither band, including EP-only uncategorised hits.
+    other_tracker_request_count: int = 0
+    # Owner concentration over the advertising band (two-vendor Google / Meta split).
+    advertising_google_request_count: int = 0
+    advertising_meta_request_count: int = 0
 
     @staticmethod
     def art_9_tier_for_category(category: str) -> str:
@@ -185,6 +216,31 @@ class SitePrivacyFindings:
         third_party_domains = {request.registered_domain for request in third_party_requests}
         tracker_domains = {request.registered_domain for request in tracker_requests}
 
+        third_party_trackers = [
+            request for request in requests if request.is_third_party and request.is_tracker
+        ]
+        advertising_trackers = [
+            request
+            for request in third_party_trackers
+            if in_band(request, ADVERTISING_TRACKER_CATEGORIES)
+        ]
+        advertising_tracker_request_count = len(advertising_trackers)
+        analytics_tracker_request_count = sum(
+            1 for request in third_party_trackers if in_band(request, ANALYTICS_TRACKER_CATEGORIES)
+        )
+        other_tracker_request_count = sum(
+            1
+            for request in third_party_trackers
+            if not in_band(request, ADVERTISING_TRACKER_CATEGORIES)
+            and not in_band(request, ANALYTICS_TRACKER_CATEGORIES)
+        )
+        advertising_google_request_count = sum(
+            1 for request in advertising_trackers if request.tracker_owner == GOOGLE_OWNER_NAME
+        )
+        advertising_meta_request_count = sum(
+            1 for request in advertising_trackers if request.tracker_owner in META_OWNER_NAMES
+        )
+
         classified_cookie_count = sum(1 for cookie in cookies if cookie.classification_matched)
         eprivacy_vendors = tuple(
             sorted(
@@ -212,6 +268,8 @@ class SitePrivacyFindings:
             or banner.gpp_api_present
         )
         banner_heuristic_only = banner.banner_present and not banner_api_verified
+
+        edges = ExfilEdge.find_all(analyzed_trial)
 
         return cls(
             site_id=site.site_id,
@@ -276,4 +334,11 @@ class SitePrivacyFindings:
             # Observed behaviour: a tracker request (transmission) or a tracking cookie being set
             # (local storage, not itself transmitted); not a compliance verdict.
             art_9_transmission_present=tracking_cookie_present or tracker_request_present,
+            exfiltration_edge_count=len(edges),
+            has_exfiltration=bool(edges),
+            advertising_tracker_request_count=advertising_tracker_request_count,
+            analytics_tracker_request_count=analytics_tracker_request_count,
+            other_tracker_request_count=other_tracker_request_count,
+            advertising_google_request_count=advertising_google_request_count,
+            advertising_meta_request_count=advertising_meta_request_count,
         )

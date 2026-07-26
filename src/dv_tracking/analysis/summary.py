@@ -14,7 +14,7 @@ from pathlib import Path
 import polars as pl
 
 from dv_tracking.analysis.models import SitePrivacyFindings
-from dv_tracking.analysis.statistics import DistributionSummary, proportion
+from dv_tracking.analysis.statistics import DistributionSummary, column_median, percent
 from dv_tracking.constants import TRACKER_LIST_SNAPSHOTS
 from dv_tracking.latex import LatexTable
 
@@ -38,6 +38,33 @@ SUMMARY_HEADERS: dict[str, str] = {
     "tracker_request_median": "Tracker reqs (median)",
     "third_party_request_median": "3rd-party reqs (median)",
     "total_cookie_median": "Cookies (median)",
+    "any_tracker_site_count": "Any-tracker sites",
+    "any_tracker_pct": "Any-tracker %",
+    "tracker_domain_median": "Tracker domains (median)",
+    "tracker_domain_iqr_low": "Tracker domains (Q1)",
+    "tracker_domain_iqr_high": "Tracker domains (Q3)",
+    "banner_api_verified_site_count": "API-banner sites",
+    "tracking_despite_api_banner_count": "Track despite API banner",
+    "tracking_despite_api_banner_pct": "Track despite API banner %",
+    "banner_heuristic_site_count": "Heuristic-banner sites",
+    "tracking_despite_heuristic_banner_pct": "Track despite heuristic banner %",
+    "non_essential_cookie_site_count": "Non-essential cookie sites",
+    "non_essential_cookie_pct": "Non-essential cookie %",
+    "necessary_long_lived_site_count": "Necessary long-lived sites",
+    "necessary_long_lived_pct": "Necessary long-lived %",
+    "exfiltration_site_count": "Exfiltration sites",
+    "exfiltration_pct": "Exfiltration %",
+    "exfiltration_edge_median": "Exfiltration edges (median)",
+    "advertising_tracker_site_count": "Advertising tracker sites",
+    "advertising_tracker_pct": "Advertising tracker %",
+    "analytics_tracker_site_count": "Analytics tracker sites",
+    "analytics_tracker_pct": "Analytics tracker %",
+    "other_tracker_site_count": "Other tracker sites",
+    "other_tracker_pct": "Other tracker %",
+    "advertising_owner_google_site_count": "Advertising Google sites",
+    "advertising_google_pct": "Advertising Google %",
+    "advertising_owner_meta_site_count": "Advertising Meta sites",
+    "advertising_meta_pct": "Advertising Meta %",
 }
 
 SUMMARY_COLUMN_FORMATS: dict[str, int] = {
@@ -48,6 +75,21 @@ SUMMARY_COLUMN_FORMATS: dict[str, int] = {
     "tracker_request_median": 1,
     "third_party_request_median": 1,
     "total_cookie_median": 1,
+    "any_tracker_pct": 1,
+    "tracker_domain_median": 1,
+    "tracker_domain_iqr_low": 1,
+    "tracker_domain_iqr_high": 1,
+    "tracking_despite_api_banner_pct": 1,
+    "tracking_despite_heuristic_banner_pct": 1,
+    "non_essential_cookie_pct": 1,
+    "necessary_long_lived_pct": 1,
+    "exfiltration_pct": 1,
+    "exfiltration_edge_median": 1,
+    "advertising_tracker_pct": 1,
+    "analytics_tracker_pct": 1,
+    "other_tracker_pct": 1,
+    "advertising_google_pct": 1,
+    "advertising_meta_pct": 1,
 }
 
 
@@ -90,16 +132,38 @@ class GeolocationSummaryRow:
     tracker_request_median: float
     third_party_request_median: float
     total_cookie_median: float
+    any_tracker_site_count: int
+    any_tracker_pct: float
+    tracker_domain_median: float
+    tracker_domain_iqr_low: float
+    tracker_domain_iqr_high: float
+    banner_api_verified_site_count: int
+    tracking_despite_api_banner_count: int
+    tracking_despite_api_banner_pct: float
+    banner_heuristic_site_count: int
+    tracking_despite_heuristic_banner_pct: float
+    non_essential_cookie_site_count: int
+    non_essential_cookie_pct: float
+    necessary_long_lived_site_count: int
+    necessary_long_lived_pct: float
+    exfiltration_site_count: int
+    exfiltration_pct: float
+    exfiltration_edge_median: float
+    advertising_tracker_site_count: int
+    advertising_tracker_pct: float
+    analytics_tracker_site_count: int
+    analytics_tracker_pct: float
+    other_tracker_site_count: int
+    other_tracker_pct: float
+    advertising_owner_google_site_count: int
+    advertising_google_pct: float
+    advertising_owner_meta_site_count: int
+    advertising_meta_pct: float
 
     @classmethod
     def from_run(cls, run_label: str, cell: pl.DataFrame) -> GeolocationSummaryRow:
         """
         Summarises one run's site-level frame into a descriptive row.
-
-        Art 9 transmission is a rate over the Art-9-implicated denominator, not
-        all sites; ePrivacy and the two banner rates are over all successful sites.
-        The banner rate is split into an API-verified rate and an unvalidated
-        heuristic-only rate; the union is never reported as a single figure.
 
         Args:
             run_label: The run's display label.
@@ -113,27 +177,75 @@ class GeolocationSummaryRow:
         eprivacy = int(cell.filter(pl.col("eprivacy_5_3_candidate_count") > 0).height)
         banner_api_verified = int(cell.filter(pl.col("banner_api_verified")).height)
         banner_heuristic = int(cell.filter(pl.col("banner_heuristic_only")).height)
+        any_tracker = int(cell.filter(pl.col("tracker_request_count") > 0).height)
+        tracker_domains = DistributionSummary.from_values(
+            cell.get_column("tracker_domain_count").to_list()
+        )
+        tracking_despite_api = int(
+            cell.filter(
+                pl.col("banner_api_verified") & (pl.col("tracker_request_count") > 0)
+            ).height
+        )
+        tracking_despite_heuristic = int(
+            cell.filter(
+                pl.col("banner_heuristic_only") & (pl.col("tracker_request_count") > 0)
+            ).height
+        )
+        non_essential = int(cell.filter(pl.col("non_essential_cookie_count") > 0).height)
+        necessary_long_lived = int(
+            cell.filter(pl.col("necessary_but_long_lived_cookie_count") > 0).height
+        )
+        exfiltration = int(cell.filter(pl.col("has_exfiltration")).height)
+        advertising = int(cell.filter(pl.col("advertising_tracker_request_count") > 0).height)
+        analytics = int(cell.filter(pl.col("analytics_tracker_request_count") > 0).height)
+        other_tracker = int(cell.filter(pl.col("other_tracker_request_count") > 0).height)
+        advertising_google = int(cell.filter(pl.col("advertising_google_request_count") > 0).height)
+        advertising_meta = int(cell.filter(pl.col("advertising_meta_request_count") > 0).height)
         return cls(
             run_label=run_label,
             site_count=site_count,
             art_9_implicated_count=implicated,
             art_9_transmission_count=transmission,
-            art_9_transmission_pct=proportion(transmission, implicated) * 100,
+            art_9_transmission_pct=percent(transmission, implicated),
             eprivacy_candidate_site_count=eprivacy,
-            eprivacy_candidate_pct=proportion(eprivacy, site_count) * 100,
+            eprivacy_candidate_pct=percent(eprivacy, site_count),
             banner_api_verified_count=banner_api_verified,
-            banner_api_verified_pct=proportion(banner_api_verified, site_count) * 100,
+            banner_api_verified_pct=percent(banner_api_verified, site_count),
             banner_heuristic_count=banner_heuristic,
-            banner_heuristic_pct=proportion(banner_heuristic, site_count) * 100,
-            tracker_request_median=DistributionSummary.from_values(
-                cell.get_column("tracker_request_count").to_list()
-            ).median,
-            third_party_request_median=DistributionSummary.from_values(
-                cell.get_column("third_party_request_count").to_list()
-            ).median,
-            total_cookie_median=DistributionSummary.from_values(
-                cell.get_column("total_cookie_count").to_list()
-            ).median,
+            banner_heuristic_pct=percent(banner_heuristic, site_count),
+            tracker_request_median=column_median(cell, "tracker_request_count"),
+            third_party_request_median=column_median(cell, "third_party_request_count"),
+            total_cookie_median=column_median(cell, "total_cookie_count"),
+            any_tracker_site_count=any_tracker,
+            any_tracker_pct=percent(any_tracker, site_count),
+            tracker_domain_median=tracker_domains.median,
+            tracker_domain_iqr_low=tracker_domains.iqr_low,
+            tracker_domain_iqr_high=tracker_domains.iqr_high,
+            banner_api_verified_site_count=banner_api_verified,
+            tracking_despite_api_banner_count=tracking_despite_api,
+            tracking_despite_api_banner_pct=percent(tracking_despite_api, banner_api_verified),
+            banner_heuristic_site_count=banner_heuristic,
+            tracking_despite_heuristic_banner_pct=percent(
+                tracking_despite_heuristic, banner_heuristic
+            ),
+            non_essential_cookie_site_count=non_essential,
+            non_essential_cookie_pct=percent(non_essential, site_count),
+            necessary_long_lived_site_count=necessary_long_lived,
+            necessary_long_lived_pct=percent(necessary_long_lived, site_count),
+            exfiltration_site_count=exfiltration,
+            exfiltration_pct=percent(exfiltration, site_count),
+            exfiltration_edge_median=column_median(cell, "exfiltration_edge_count"),
+            advertising_tracker_site_count=advertising,
+            advertising_tracker_pct=percent(advertising, site_count),
+            analytics_tracker_site_count=analytics,
+            analytics_tracker_pct=percent(analytics, site_count),
+            other_tracker_site_count=other_tracker,
+            other_tracker_pct=percent(other_tracker, site_count),
+            advertising_owner_google_site_count=advertising_google,
+            # Owner rates are over the advertising-band sites, not all sites.
+            advertising_google_pct=percent(advertising_google, advertising),
+            advertising_owner_meta_site_count=advertising_meta,
+            advertising_meta_pct=percent(advertising_meta, advertising),
         )
 
 
@@ -241,3 +353,15 @@ class JurisdictionSummary:
             path: The path written.
         """
         return self.to_latex_table(preamble=self.provenance_comment()).write(path)
+
+    def write_parquet(self, path: Path) -> Path:
+        """
+        Writes the summary frame, one row per run, as a parquet file.
+
+        Args:
+            path: The file path to write.
+        Returns:
+            path: The path written.
+        """
+        self.to_dataframe().write_parquet(path)
+        return path

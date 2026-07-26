@@ -46,6 +46,7 @@ class AnalyzedRequest:
     is_tracker: bool
     tracker_source: str
     tracker_categories: tuple[str, ...]
+    tracker_owner: str | None = None
 
     @classmethod
     def from_raw(
@@ -61,18 +62,21 @@ class AnalyzedRequest:
         Args:
             raw: The captured raw request.
             page_origin_domain: The registered domain of the visited page.
-            ep_matcher: The host-only EasyPrivacy matcher.
+            ep_matcher: An EasyPrivacyMatcher.
             radar: The DDG Tracker Radar index.
         Returns:
             analyzed: The request carrying its derived party and tracker fields.
         """
         registered_domain = registered_domain_for_host(raw.host)
         is_third_party = is_third_party_to_origin(registered_domain, page_origin_domain)
-        ep_hit = ep_matcher.is_tracker(raw.host)
+        ep_hit = ep_matcher.is_tracker(
+            raw.url, raw.resource_type, is_third_party, page_origin_domain
+        )
         ddg_hit = radar.is_tracker(raw.host)
         tracker_source = cls.tracker_source_label(ep_hit=ep_hit, ddg_hit=ddg_hit)
         radar_entry = radar.lookup(raw.host)
         tracker_categories = radar_entry.categories if radar_entry is not None else ()
+        tracker_owner = radar_entry.owner if radar_entry is not None else None
         return cls(
             url=raw.url,
             host=raw.host,
@@ -83,6 +87,7 @@ class AnalyzedRequest:
             is_tracker=ep_hit or ddg_hit,
             tracker_source=tracker_source,
             tracker_categories=tracker_categories,
+            tracker_owner=tracker_owner,
         )
 
     @staticmethod
@@ -241,7 +246,7 @@ class AnalyzedTrial:
         Args:
             raw_trial: The raw trial to analyze.
             cookie_db: The cookie database used to classify cookie names.
-            ep_matcher: The host-only EasyPrivacy matcher.
+            ep_matcher: An EasyPrivacyMatcher.
             radar: The DDG Tracker Radar index.
             banner_classifier: The multi-source banner classifier.
             platform_classifier: The hosting-platform classifier.
