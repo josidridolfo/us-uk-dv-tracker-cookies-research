@@ -54,7 +54,14 @@ META_OWNER_NAMES: frozenset[str] = frozenset({"Facebook", "Meta"})
 # The pure-3p / first-party-context split is read off the same reported (longest-dwell)
 # visit as the tracker-band counts, so its site denominator matches any_tracker_site_count.
 LONGEST_DWELL_BOOLEAN_COLUMNS: frozenset[str] = frozenset(
-    {"has_first_party_context_tracker", "has_pure_third_party_tracker"}
+    {
+        "has_first_party_context_tracker",
+        "has_pure_third_party_tracker",
+        "has_exfiltration",
+        "third_party_exfil",
+        "first_party_cookie_exfil",
+        "art_9_exfil",
+    }
 )
 
 
@@ -113,7 +120,12 @@ class SitePrivacyFindings:
     art_9_tier: str
     art_9_tracking_cookie_present: bool
     art_9_tracker_request_present: bool
-    art_9_transmission_present: bool
+    # R2 on an Art 9 visit: implicated AND a cookie value reaches a known tracker.
+    art_9_exfil: bool
+    # R2: any cookie value reaches a known-tracker destination (dest_is_tracker edge).
+    third_party_exfil: bool
+    # R3: R2 with a first-party source cookie (dest_is_tracker AND cookie_is_first_party).
+    first_party_cookie_exfil: bool
 
     exfiltration_edge_count: int = 0
     has_exfiltration: bool = False
@@ -202,7 +214,7 @@ class SitePrivacyFindings:
     @classmethod
     def art_9_denominator(cls, frame: pl.DataFrame) -> int:
         """
-        The denominator for Art 9 transmission rates: the count of implicated sites.
+        The denominator for the Art 9 exfil rate: the count of implicated sites.
 
         Args:
             frame: A site-level findings frame.
@@ -328,6 +340,14 @@ class SitePrivacyFindings:
         banner_heuristic_only = cmp_confidence_tier == "heuristic_only"
 
         edges = ExfilEdge.find_all(analyzed_trial)
+        # R2: a cookie value reaches a known-tracker destination.
+        has_third_party_exfil = any(edge.dest_is_tracker for edge in edges)
+        # R3: R2 whose source cookie is first-party.
+        has_first_party_cookie_exfil = any(
+            edge.dest_is_tracker and edge.cookie_is_first_party for edge in edges
+        )
+        # R2 scoped to an Art 9 visit; replaces the old cookie-set-or-request-seen definition.
+        art_9_exfil = art_9_implicated and has_third_party_exfil
 
         return cls(
             site_id=site.site_id,
@@ -390,9 +410,11 @@ class SitePrivacyFindings:
             art_9_tier=cls.art_9_tier_for_category(site.category),
             art_9_tracking_cookie_present=tracking_cookie_present,
             art_9_tracker_request_present=tracker_request_present,
-            # Observed behaviour: a tracker request (transmission) or a tracking cookie being set
-            # (local storage, not itself transmitted); not a compliance verdict.
-            art_9_transmission_present=tracking_cookie_present or tracker_request_present,
+            # Observed behaviour: a cookie value actually reaches a known tracker on an
+            # Art 9 visit (R2), not merely a cookie set or a tracker request seen.
+            art_9_exfil=art_9_exfil,
+            third_party_exfil=has_third_party_exfil,
+            first_party_cookie_exfil=has_first_party_cookie_exfil,
             exfiltration_edge_count=len(edges),
             has_exfiltration=bool(edges),
             advertising_tracker_request_count=advertising_tracker_request_count,

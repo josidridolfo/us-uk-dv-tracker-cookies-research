@@ -1,7 +1,7 @@
 """
 The dv-analyze entrypoint: classify two explicit runs into per-site findings and write the parquet outputs and the LaTeX summary table.
 
-Each run is a (crawl-date, geolocation) pair selected with --run. For each run the raw trials of exactly that one cell directory are loaded, the classifiers built from the pinned tracker-list snapshots derive one SitePrivacyFindings per trial, the per-site rows collapse to one row per site at the longest dwell, and the two runs are compared in one aggregate-only summary. Art 9 transmission rates use the count of Art-9-implicated sites as the denominator, not all sites.
+Each run is a (crawl-date, geolocation) pair selected with --run. For each run the raw trials of exactly that one cell directory are loaded, the classifiers built from the pinned tracker-list snapshots derive one SitePrivacyFindings per trial, the per-site rows collapse to one row per site at the longest dwell, and the two runs are compared in one aggregate-only summary. Art 9 exfil rates use the count of Art-9-implicated sites as the denominator, not all sites.
 """
 
 from __future__ import annotations

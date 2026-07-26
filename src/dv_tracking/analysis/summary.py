@@ -27,8 +27,8 @@ SUMMARY_HEADERS: dict[str, str] = {
     "run_label": "Run",
     "site_count": "Sites",
     "art_9_implicated_count": "Art 9 sites",
-    "art_9_transmission_count": "Art 9 transmit",
-    "art_9_transmission_pct": "Art 9 transmit %",
+    "art_9_exfil_count": "Art 9 exfil",
+    "art_9_exfil_pct": "Art 9 exfil %",
     "eprivacy_candidate_site_count": "ePrivacy sites",
     "eprivacy_candidate_pct": "ePrivacy %",
     "banner_api_verified_count": "Banner API sites (TCF-visible subset)",
@@ -66,6 +66,10 @@ SUMMARY_HEADERS: dict[str, str] = {
     "exfiltration_site_count": "Exfiltration sites",
     "exfiltration_pct": "Exfiltration %",
     "exfiltration_edge_median": "Exfiltration edges (median)",
+    "third_party_exfil_site_count": "Third-party exfil sites",
+    "third_party_exfil_pct": "Third-party exfil %",
+    "first_party_cookie_exfil_site_count": "First-party-cookie exfil sites",
+    "first_party_cookie_exfil_pct": "First-party-cookie exfil %",
     "advertising_tracker_site_count": "Advertising tracker sites",
     "advertising_tracker_pct": "Advertising tracker %",
     "analytics_tracker_site_count": "Analytics tracker sites",
@@ -83,7 +87,7 @@ SUMMARY_HEADERS: dict[str, str] = {
 }
 
 SUMMARY_COLUMN_FORMATS: dict[str, int] = {
-    "art_9_transmission_pct": 1,
+    "art_9_exfil_pct": 1,
     "eprivacy_candidate_pct": 1,
     "banner_api_verified_pct": 1,
     "banner_heuristic_pct": 1,
@@ -106,6 +110,8 @@ SUMMARY_COLUMN_FORMATS: dict[str, int] = {
     "necessary_long_lived_pct": 1,
     "exfiltration_pct": 1,
     "exfiltration_edge_median": 1,
+    "third_party_exfil_pct": 1,
+    "first_party_cookie_exfil_pct": 1,
     "advertising_tracker_pct": 1,
     "analytics_tracker_pct": 1,
     "other_tracker_pct": 1,
@@ -144,8 +150,8 @@ class GeolocationSummaryRow:
     run_label: str
     site_count: int
     art_9_implicated_count: int
-    art_9_transmission_count: int
-    art_9_transmission_pct: float
+    art_9_exfil_count: int
+    art_9_exfil_pct: float
     eprivacy_candidate_site_count: int
     eprivacy_candidate_pct: float
     banner_api_verified_count: int
@@ -185,6 +191,11 @@ class GeolocationSummaryRow:
     exfiltration_site_count: int
     exfiltration_pct: float
     exfiltration_edge_median: float
+    # R2 / R3 exfil, both over successful sites (site_count): R1 >= R2 >= R3.
+    third_party_exfil_site_count: int
+    third_party_exfil_pct: float
+    first_party_cookie_exfil_site_count: int
+    first_party_cookie_exfil_pct: float
     advertising_tracker_site_count: int
     advertising_tracker_pct: float
     analytics_tracker_site_count: int
@@ -216,7 +227,7 @@ class GeolocationSummaryRow:
         """
         site_count = cell.height
         implicated = SitePrivacyFindings.art_9_denominator(cell)
-        transmission = int(cell.filter(pl.col("art_9_transmission_present")).height)
+        art_9_exfil = int(cell.filter(pl.col("art_9_exfil")).height)
         eprivacy = int(cell.filter(pl.col("eprivacy_5_3_candidate_count") > 0).height)
         banner_api_verified = int(cell.filter(pl.col("banner_api_verified")).height)
         banner_heuristic = int(cell.filter(pl.col("banner_heuristic_only")).height)
@@ -262,6 +273,8 @@ class GeolocationSummaryRow:
             cell.filter(pl.col("necessary_but_long_lived_cookie_count") > 0).height
         )
         exfiltration = int(cell.filter(pl.col("has_exfiltration")).height)
+        third_party_exfil = int(cell.filter(pl.col("third_party_exfil")).height)
+        first_party_cookie_exfil = int(cell.filter(pl.col("first_party_cookie_exfil")).height)
         advertising = int(cell.filter(pl.col("advertising_tracker_request_count") > 0).height)
         analytics = int(cell.filter(pl.col("analytics_tracker_request_count") > 0).height)
         other_tracker = int(cell.filter(pl.col("other_tracker_request_count") > 0).height)
@@ -273,8 +286,8 @@ class GeolocationSummaryRow:
             run_label=run_label,
             site_count=site_count,
             art_9_implicated_count=implicated,
-            art_9_transmission_count=transmission,
-            art_9_transmission_pct=percent(transmission, implicated),
+            art_9_exfil_count=art_9_exfil,
+            art_9_exfil_pct=percent(art_9_exfil, implicated),
             eprivacy_candidate_site_count=eprivacy,
             eprivacy_candidate_pct=percent(eprivacy, site_count),
             banner_api_verified_count=banner_api_verified,
@@ -318,6 +331,10 @@ class GeolocationSummaryRow:
             exfiltration_site_count=exfiltration,
             exfiltration_pct=percent(exfiltration, site_count),
             exfiltration_edge_median=column_median(cell, "exfiltration_edge_count"),
+            third_party_exfil_site_count=third_party_exfil,
+            third_party_exfil_pct=percent(third_party_exfil, site_count),
+            first_party_cookie_exfil_site_count=first_party_cookie_exfil,
+            first_party_cookie_exfil_pct=percent(first_party_cookie_exfil, site_count),
             advertising_tracker_site_count=advertising,
             advertising_tracker_pct=percent(advertising, site_count),
             analytics_tracker_site_count=analytics,
@@ -399,7 +416,7 @@ class JurisdictionSummary:
         for row in self.rows:
             lines.append(
                 f"% run {row.run_label}: {row.site_count} sites, "
-                f"{row.art_9_implicated_count} Art-9-implicated (transmission denominator)"
+                f"{row.art_9_implicated_count} Art-9-implicated (exfil denominator)"
             )
         for snapshot in TRACKER_LIST_SNAPSHOTS:
             commit = snapshot.pinned_commit or "n/a"
