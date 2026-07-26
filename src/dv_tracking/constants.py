@@ -12,6 +12,7 @@ from dv_tracking import PROJECT_ROOT
 GEOLOCATIONS: tuple[str, ...] = ("uk", "us")
 TRACKER_LISTS_DIR: Path = PROJECT_ROOT / "tracker_lists"
 DEFAULT_CONSENTOMATIC_RULES_PATH: Path = TRACKER_LISTS_DIR / "consentomatic" / "Rules.json"
+CMP_VENDOR_HOSTS_PATH: Path = TRACKER_LISTS_DIR / "cmp_vendors" / "cmp_vendors.csv"
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ TRACKER_LIST_SNAPSHOTS: tuple[TrackerListSnapshot, ...] = (
     TrackerListSnapshot("EasyPrivacy", "2026-06-20", "d4a1b7e"),
     TrackerListSnapshot("Open Cookie Database", "2026-06-13", None),
     TrackerListSnapshot("Consent-O-Matic", "2026-05-16", "8ca8500"),
+    TrackerListSnapshot("CMP vendor hosts", "2026-07-25", None),
 )
 
 # UK's ISO 3166-1 alpha-2 code is GB; the project label for that cell is "uk".

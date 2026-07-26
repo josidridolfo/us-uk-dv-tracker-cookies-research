@@ -91,6 +91,8 @@ class SitePrivacyFindings:
     banner_heuristic_only: bool
     banner_primary_method: str | None
     cmp_vendor: str | None
+    # Confidence ladder: api_verified > vendor_observed > heuristic_only > none.
+    cmp_confidence_tier: str
     hosting_platform: str
     # First-party (top-origin) localStorage only; cross-origin iframe stores are out of scope.
     first_party_local_storage_key_count: int
@@ -267,7 +269,18 @@ class SitePrivacyFindings:
             or banner.usp_api_present
             or banner.gpp_api_present
         )
-        banner_heuristic_only = banner.banner_present and not banner_api_verified
+        vendor_observed = banner.hostname_match is not None
+        # A pinned CMP host loading (vendor_observed) is a firmer tell than the bare
+        # DOM/z-index heuristic, so it no longer collapses into the heuristic bucket.
+        if banner_api_verified:
+            cmp_confidence_tier = "api_verified"
+        elif vendor_observed:
+            cmp_confidence_tier = "vendor_observed"
+        elif banner.banner_present:
+            cmp_confidence_tier = "heuristic_only"
+        else:
+            cmp_confidence_tier = "none"
+        banner_heuristic_only = cmp_confidence_tier == "heuristic_only"
 
         edges = ExfilEdge.find_all(analyzed_trial)
 
@@ -320,6 +333,7 @@ class SitePrivacyFindings:
             banner_heuristic_only=banner_heuristic_only,
             banner_primary_method=banner.primary_method,
             cmp_vendor=banner.cmp_vendor,
+            cmp_confidence_tier=cmp_confidence_tier,
             hosting_platform=analyzed_trial.hosting_platform.platform,
             first_party_local_storage_key_count=(
                 len(analyzed_trial.local_storage.entries)

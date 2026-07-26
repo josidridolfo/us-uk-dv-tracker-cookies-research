@@ -31,10 +31,21 @@ SUMMARY_HEADERS: dict[str, str] = {
     "art_9_transmission_pct": "Art 9 transmit %",
     "eprivacy_candidate_site_count": "ePrivacy sites",
     "eprivacy_candidate_pct": "ePrivacy %",
-    "banner_api_verified_count": "Banner (API) sites",
-    "banner_api_verified_pct": "Banner (API) %",
+    "banner_api_verified_count": "Banner API sites (TCF-visible subset)",
+    "banner_api_verified_pct": "Banner API % (TCF-visible subset)",
     "banner_heuristic_count": "Banner (heuristic) sites",
     "banner_heuristic_pct": "Banner (heuristic) %",
+    "cmp_present_count": "CMP present sites (excl. DOM-heuristic)",
+    "cmp_present_pct": "CMP present % (excl. DOM-heuristic)",
+    "cmp_vendor_observed_count": "CMP vendor-observed sites",
+    "cmp_vendor_observed_pct": "CMP vendor-observed %",
+    "tracking_despite_cmp_count": "Track despite CMP",
+    "tracking_despite_cmp_pct": "Track despite CMP %",
+    "tracking_despite_vendor_observed_pct": "Track despite vendor-observed %",
+    "banner_present_count": "Consent banner sites (incl. DOM-heuristic)",
+    "banner_present_pct": "Consent banner % (incl. DOM-heuristic)",
+    "tracking_despite_banner_present_count": "Track despite banner (incl. DOM-heuristic)",
+    "tracking_despite_banner_present_pct": "Track despite banner % (incl. DOM-heuristic)",
     "tracker_request_median": "Tracker reqs (median)",
     "third_party_request_median": "3rd-party reqs (median)",
     "total_cookie_median": "Cookies (median)",
@@ -43,9 +54,9 @@ SUMMARY_HEADERS: dict[str, str] = {
     "tracker_domain_median": "Tracker domains (median)",
     "tracker_domain_iqr_low": "Tracker domains (Q1)",
     "tracker_domain_iqr_high": "Tracker domains (Q3)",
-    "banner_api_verified_site_count": "API-banner sites",
-    "tracking_despite_api_banner_count": "Track despite API banner",
-    "tracking_despite_api_banner_pct": "Track despite API banner %",
+    "banner_api_verified_site_count": "API-banner sites (TCF-visible subset)",
+    "tracking_despite_api_banner_count": "Track despite API banner (TCF-visible subset)",
+    "tracking_despite_api_banner_pct": "Track despite API banner % (TCF-visible subset)",
     "banner_heuristic_site_count": "Heuristic-banner sites",
     "tracking_despite_heuristic_banner_pct": "Track despite heuristic banner %",
     "non_essential_cookie_site_count": "Non-essential cookie sites",
@@ -72,6 +83,12 @@ SUMMARY_COLUMN_FORMATS: dict[str, int] = {
     "eprivacy_candidate_pct": 1,
     "banner_api_verified_pct": 1,
     "banner_heuristic_pct": 1,
+    "cmp_present_pct": 1,
+    "cmp_vendor_observed_pct": 1,
+    "tracking_despite_cmp_pct": 1,
+    "tracking_despite_vendor_observed_pct": 1,
+    "banner_present_pct": 1,
+    "tracking_despite_banner_present_pct": 1,
     "tracker_request_median": 1,
     "third_party_request_median": 1,
     "total_cookie_median": 1,
@@ -129,6 +146,19 @@ class GeolocationSummaryRow:
     banner_api_verified_pct: float
     banner_heuristic_count: int
     banner_heuristic_pct: float
+    # C6/C7: any CMP present = API-verified union vendor-observed (mutually exclusive tiers).
+    cmp_present_count: int
+    cmp_present_pct: float
+    cmp_vendor_observed_count: int
+    cmp_vendor_observed_pct: float
+    tracking_despite_cmp_count: int
+    tracking_despite_cmp_pct: float
+    tracking_despite_vendor_observed_pct: float
+    # Companion assessment: any consent banner incl. the DOM heuristic (superset of CMP present).
+    banner_present_count: int
+    banner_present_pct: float
+    tracking_despite_banner_present_count: int
+    tracking_despite_banner_present_pct: float
     tracker_request_median: float
     third_party_request_median: float
     total_cookie_median: float
@@ -165,6 +195,8 @@ class GeolocationSummaryRow:
         """
         Summarises one run's site-level frame into a descriptive row.
 
+        C6 counts any CMP present = API-verified union vendor-observed (exclusive tiers).
+
         Args:
             run_label: The run's display label.
             cell: The successful site-level findings for this run.
@@ -177,6 +209,28 @@ class GeolocationSummaryRow:
         eprivacy = int(cell.filter(pl.col("eprivacy_5_3_candidate_count") > 0).height)
         banner_api_verified = int(cell.filter(pl.col("banner_api_verified")).height)
         banner_heuristic = int(cell.filter(pl.col("banner_heuristic_only")).height)
+        vendor_observed = int(
+            cell.filter(pl.col("cmp_confidence_tier") == "vendor_observed").height
+        )
+        # A and B are mutually exclusive tiers, so the union count is their sum.
+        cmp_present = banner_api_verified + vendor_observed
+        cmp_present_mask = pl.col("banner_api_verified") | (
+            pl.col("cmp_confidence_tier") == "vendor_observed"
+        )
+        tracking_despite_cmp = int(
+            cell.filter(cmp_present_mask & (pl.col("tracker_request_count") > 0)).height
+        )
+        tracking_despite_vendor_observed = int(
+            cell.filter(
+                (pl.col("cmp_confidence_tier") == "vendor_observed")
+                & (pl.col("tracker_request_count") > 0)
+            ).height
+        )
+        # With-DOM-heuristic companion: any consent banner (superset of CMP present).
+        banner_present = int(cell.filter(pl.col("banner_present")).height)
+        tracking_despite_banner_present = int(
+            cell.filter(pl.col("banner_present") & (pl.col("tracker_request_count") > 0)).height
+        )
         any_tracker = int(cell.filter(pl.col("tracker_request_count") > 0).height)
         tracker_domains = DistributionSummary.from_values(
             cell.get_column("tracker_domain_count").to_list()
@@ -213,6 +267,21 @@ class GeolocationSummaryRow:
             banner_api_verified_pct=percent(banner_api_verified, site_count),
             banner_heuristic_count=banner_heuristic,
             banner_heuristic_pct=percent(banner_heuristic, site_count),
+            cmp_present_count=cmp_present,
+            cmp_present_pct=percent(cmp_present, site_count),
+            cmp_vendor_observed_count=vendor_observed,
+            cmp_vendor_observed_pct=percent(vendor_observed, site_count),
+            tracking_despite_cmp_count=tracking_despite_cmp,
+            tracking_despite_cmp_pct=percent(tracking_despite_cmp, cmp_present),
+            tracking_despite_vendor_observed_pct=percent(
+                tracking_despite_vendor_observed, vendor_observed
+            ),
+            banner_present_count=banner_present,
+            banner_present_pct=percent(banner_present, site_count),
+            tracking_despite_banner_present_count=tracking_despite_banner_present,
+            tracking_despite_banner_present_pct=percent(
+                tracking_despite_banner_present, banner_present
+            ),
             tracker_request_median=column_median(cell, "tracker_request_count"),
             third_party_request_median=column_median(cell, "third_party_request_count"),
             total_cookie_median=column_median(cell, "total_cookie_count"),

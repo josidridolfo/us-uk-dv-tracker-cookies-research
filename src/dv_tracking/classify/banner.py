@@ -12,31 +12,65 @@ highest-ranked one (primary_method) for cross-source auditing:
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
+from pathlib import Path
 
+from dv_tracking.constants import CMP_VENDOR_HOSTS_PATH
 from dv_tracking.crawl.models import BannerSignals, TCFProbeResult
 
-# Vendor name -> host suffixes. Names align with Consent-O-Matic CMP keys so
-# hostname and consentomatic hits collapse into one vendor entry.
-CMP_VENDOR_HOSTS: dict[str, tuple[str, ...]] = {
-    "OneTrust": ("onetrust.com", "cookielaw.org", "otcdn.com"),
-    "Cookiebot": ("cookiebot.com", "cookiebot.eu"),
-    "Sourcepoint": ("sourcepoint.com", "sp-prod.net"),
-    "Quantcast Choice": ("quantcast.com", "quantcast.mgr.consensu.org"),
-    "TrustArc": ("trustarc.com", "truste.com"),
-    "Usercentrics": ("usercentrics.eu", "usercentrics.com"),
-    "Didomi": ("didomi.io", "privacy-center.org"),
-    "Iubenda": ("iubenda.com",),
-    "Tealium": ("tealiumiq.com", "tiqcdn.com"),
-    "Termly": ("termly.io",),
-    "Cookie Information": ("cookieinformation.com",),
-    "Consent Manager": ("consentmanager.net",),
-    "Sharethis": ("sharethis.com",),
-    "UniConsent": ("uniconsent.com",),
-    "IAB TCF runtime": ("consensu.org",),
-}
 
-# Consent-O-Matic rule key -> canonical vendor name in CMP_VENDOR_HOSTS.
+@dataclass(frozen=True)
+class CmpVendorHost:
+    """A pinned CMP-vendor host tell: which vendor a host pattern attributes to."""
+
+    vendor: str
+    host_pattern: str
+    match_mode: str
+    precision: str
+
+    def matches(self, host: str) -> bool:
+        """
+        True when a request host is attributable to this vendor row.
+
+        Args:
+            host: The lowercased request host to test.
+        Returns:
+            matched: Whether the host matches this row's pattern under its match mode.
+        """
+        if self.match_mode == "substring":
+            return self.host_pattern in host
+        return host == self.host_pattern or host.endswith("." + self.host_pattern)
+
+
+def load_cmp_vendor_hosts(path: Path) -> tuple[CmpVendorHost, ...]:
+    """
+    Loads the pinned CMP-vendor host rows, preserving CSV row order.
+
+    Row order is load-bearing: hostname_signal returns the first match, and the
+    specific *.mgr.consensu.org rows must precede the generic consensu.org row.
+
+    Args:
+        path: The CSV path with vendor,host_pattern,match_mode,precision columns.
+    Returns:
+        records: The vendor-host rows in file order, host patterns lowercased.
+    """
+    with path.open(newline="", encoding="utf-8") as handle:
+        return tuple(
+            CmpVendorHost(
+                vendor=row["vendor"].strip(),
+                host_pattern=row["host_pattern"].strip().lower(),
+                match_mode=row["match_mode"].strip(),
+                precision=row["precision"].strip(),
+            )
+            for row in csv.DictReader(handle)
+        )
+
+
+# Pinned CMP-vendor host tells, loaded once at import in CSV row order.
+CMP_VENDOR_HOSTS: tuple[CmpVendorHost, ...] = load_cmp_vendor_hosts(CMP_VENDOR_HOSTS_PATH)
+
+# Consent-O-Matic rule key -> canonical CMP vendor name (matched lowercased).
 CONSENTOMATIC_TO_VENDOR: dict[str, str] = {
     "onetrust": "OneTrust",
     "onetrust-stackoverflow": "OneTrust",
@@ -54,7 +88,11 @@ CONSENTOMATIC_TO_VENDOR: dict[str, str] = {
     "tealium.com": "Tealium",
     "consentmanager.net": "Consent Manager",
     "cookieinformation": "Cookie Information",
-    "sharethis": "Sharethis",
+    "cookiecontrolcivic": "Civic Cookie Control",
+    "clickio": "Clickio",
+    "evidonbanner": "Evidon",
+    "evidoniframe": "Evidon",
+    "sharethis": "ShareThis",
     "uniconsent": "UniConsent",
 }
 
@@ -145,11 +183,10 @@ class BannerClassifier:
         if not hosts:
             return None, None
         lowered = [host.lower() for host in hosts]
-        for vendor, suffixes in CMP_VENDOR_HOSTS.items():
+        for record in CMP_VENDOR_HOSTS:
             for host in lowered:
-                for suffix in suffixes:
-                    if host == suffix or host.endswith("." + suffix):
-                        return vendor, host
+                if record.matches(host):
+                    return record.vendor, host
         return None, None
 
     @staticmethod

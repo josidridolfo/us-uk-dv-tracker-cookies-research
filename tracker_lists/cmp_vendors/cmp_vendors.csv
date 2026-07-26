@@ -1,0 +1,84 @@
+vendor,host_pattern,match_mode,precision
+OneTrust,onetrust.com,suffix,high
+OneTrust,cookielaw.org,suffix,high
+OneTrust,otcdn.com,suffix,high
+OneTrust,optanon.blob.core.windows.net,suffix,high
+Cookiebot,cookiebot.com,suffix,high
+Cookiebot,cookiebot.eu,suffix,high
+Usercentrics,usercentrics.eu,suffix,high
+Usercentrics,usercentrics.com,suffix,high
+UserConsent,userconsent.org,suffix,high
+CookieYes,cookieyes.com,suffix,high
+CookieYes,cdn-cookieyes.com,suffix,high
+Cookie-Script,cookie-script.com,suffix,high
+Civic Cookie Control,civiccomputing.com,suffix,high
+CookieHub,cookiehub.net,suffix,high
+CookieHub,cookiehub.com,suffix,high
+Osano,osano.com,suffix,high
+Termly,termly.io,suffix,high
+Termly,gettermscmp.com,suffix,high
+Didomi,didomi.io,suffix,high
+Didomi,privacy-center.org,suffix,high
+Sourcepoint,sourcepoint.com,suffix,high
+Sourcepoint,sp-prod.net,suffix,high
+Sourcepoint,privacy-mgmt.com,suffix,high
+TrustArc,trustarc.com,suffix,high
+TrustArc,truste.com,suffix,high
+Quantcast Choice,cmp.quantcast.com,suffix,high
+Quantcast Choice,quantcast.mgr.consensu.org,suffix,high
+Consent Manager,consentmanager.net,suffix,high
+Cookie Information,cookieinformation.com,suffix,high
+Ketch,ketchcdn.com,suffix,high
+Ketch,ketch.com,suffix,high
+Transcend,transcend.io,suffix,high
+Axeptio,axept.io,suffix,high
+Axeptio,axeptio.eu,suffix,high
+Axeptio,axeptio.imgix.net,suffix,high
+Sirdata,sddan.com,suffix,high
+Sirdata,consentframework.com,suffix,high
+Clym,clym.io,suffix,high
+Clym,clym-sdk.net,suffix,high
+LiveRamp PCM,privacymanager.io,suffix,high
+CookieFirst,cookiefirst.com,suffix,high
+Cookie Seal,cookieseal.com,suffix,high
+Enzuzo,enzuzo.com,suffix,high
+Secure Privacy,secureprivacy.ai,suffix,high
+TRUENDO,truendo.com,suffix,high
+TRUENDO,priv.center,suffix,high
+Clarip,clarip.com,suffix,high
+Evidon,evidon.com,suffix,high
+Commanders Act TrustCommander,trustcommander.net,suffix,high
+Conversant Consent Tool,conversant.mgr.consensu.org,suffix,high
+UniConsent,uniconsent.com,suffix,high
+UniConsent,uniconsent.mgr.consensu.org,suffix,high
+Clickio,clickio.com,suffix,high
+Clickio,clickio.mgr.consensu.org,suffix,high
+Snigel AdConsent,snigelweb.com,suffix,high
+PubTech,pubtech.ai,suffix,high
+Legal Monster,legalmonster.com,suffix,high
+Normi,normi.ca,suffix,high
+Privado,privado.ai,suffix,high
+Privasee,privasee.io,suffix,high
+Vera,getvera.ai,suffix,high
+VeraSafe,verasafe.com,suffix,high
+Byscuit,byscuit.com,suffix,high
+Cookie Assistant,cookieassistant.com,suffix,high
+Alfright,alfright.eu,suffix,high
+Tramoce,tramoce.com,suffix,high
+Biskoui,biskoui.com,suffix,high
+eucookie.eu,eucookie.eu,suffix,high
+AdOpt,goadopt.io,suffix,high
+Funding Choices,fundingchoicesmessages.google.com,suffix,high
+2B Advice,2badvice-cdn.azureedge.net,suffix,high
+Seers,seersco.com,suffix,high
+HulkApps,cookiebar.hulkapps.com,suffix,high
+PieEye,cookie.pii.ai,suffix,high
+IAB TCF runtime,consensu.org,suffix,high
+Iubenda,iubenda.com,suffix,low
+ShareThis,cmp.sharethis.com,suffix,low
+Tealium,tealiumiq.com,suffix,low
+Tealium,tiqcdn.com,suffix,low
+Klaro,kiprotect.com,suffix,low
+Pandectes,pandectes.io,suffix,low
+Metomic,metomic.io,suffix,low
+Q4 Cookie Monster,widgets.q4app.com,suffix,low
