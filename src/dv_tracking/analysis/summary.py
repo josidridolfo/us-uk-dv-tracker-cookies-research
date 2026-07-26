@@ -212,11 +212,12 @@ class GeolocationSummaryRow:
         vendor_observed = int(
             cell.filter(pl.col("cmp_confidence_tier") == "vendor_observed").height
         )
-        # A and B are mutually exclusive tiers, so the union count is their sum.
-        cmp_present = banner_api_verified + vendor_observed
+        # api_verified (any-True) and vendor_observed (longest-dwell tier) are separate
+        # collapse bases, so count the union directly rather than summing the two.
         cmp_present_mask = pl.col("banner_api_verified") | (
             pl.col("cmp_confidence_tier") == "vendor_observed"
         )
+        cmp_present = int(cell.filter(cmp_present_mask).height)
         tracking_despite_cmp = int(
             cell.filter(cmp_present_mask & (pl.col("tracker_request_count") > 0)).height
         )
