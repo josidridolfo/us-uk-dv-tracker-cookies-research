@@ -214,7 +214,10 @@ class SitePrivacyFindings:
         banner = analyzed_trial.banner_finding
 
         third_party_requests = [request for request in requests if request.is_third_party]
-        tracker_requests = [request for request in requests if request.is_tracker]
+        # A tracker request is third-party AND on EP/DDG; first-party EP/DDG hits are not counted.
+        tracker_requests = [
+            request for request in requests if request.is_third_party and request.is_tracker
+        ]
         third_party_domains = {request.registered_domain for request in third_party_requests}
         tracker_domains = {request.registered_domain for request in tracker_requests}
 
