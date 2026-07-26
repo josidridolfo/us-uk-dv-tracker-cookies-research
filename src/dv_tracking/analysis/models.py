@@ -146,6 +146,10 @@ class SitePrivacyFindings:
     has_first_party_context_tracker: bool = False
     has_pure_third_party_tracker: bool = False
 
+    # DV-sector "leave this site" / quick-exit control detected in the DOM. Collapses any-True
+    # across trials (a near-static site feature), like the other banner flags.
+    quick_exit_present: bool = False
+
     @staticmethod
     def art_9_tier_for_category(category: str) -> str:
         """
@@ -424,6 +428,7 @@ class SitePrivacyFindings:
             advertising_meta_request_count=advertising_meta_request_count,
             has_first_party_context_tracker=has_first_party_context_tracker,
             has_pure_third_party_tracker=has_pure_third_party_tracker,
+            quick_exit_present=banner.quick_exit_present,
         )
 
 
