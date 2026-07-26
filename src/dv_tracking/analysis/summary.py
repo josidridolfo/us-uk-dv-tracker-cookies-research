@@ -76,6 +76,10 @@ SUMMARY_HEADERS: dict[str, str] = {
     "advertising_google_pct": "Advertising Google %",
     "advertising_owner_meta_site_count": "Advertising Meta sites",
     "advertising_meta_pct": "Advertising Meta %",
+    "first_party_context_tracker_site_count": "First-party-context tracker sites",
+    "first_party_context_tracker_pct": "First-party-context tracker %",
+    "pure_third_party_tracker_site_count": "Pure third-party tracker sites",
+    "pure_third_party_tracker_pct": "Pure third-party tracker %",
 }
 
 SUMMARY_COLUMN_FORMATS: dict[str, int] = {
@@ -107,6 +111,8 @@ SUMMARY_COLUMN_FORMATS: dict[str, int] = {
     "other_tracker_pct": 1,
     "advertising_google_pct": 1,
     "advertising_meta_pct": 1,
+    "first_party_context_tracker_pct": 1,
+    "pure_third_party_tracker_pct": 1,
 }
 
 
@@ -189,6 +195,11 @@ class GeolocationSummaryRow:
     advertising_google_pct: float
     advertising_owner_meta_site_count: int
     advertising_meta_pct: float
+    # Owner-linked split of the third-party trackers, over successful sites (site_count).
+    first_party_context_tracker_site_count: int
+    first_party_context_tracker_pct: float
+    pure_third_party_tracker_site_count: int
+    pure_third_party_tracker_pct: float
 
     @classmethod
     def from_run(cls, run_label: str, cell: pl.DataFrame) -> GeolocationSummaryRow:
@@ -256,6 +267,8 @@ class GeolocationSummaryRow:
         other_tracker = int(cell.filter(pl.col("other_tracker_request_count") > 0).height)
         advertising_google = int(cell.filter(pl.col("advertising_google_request_count") > 0).height)
         advertising_meta = int(cell.filter(pl.col("advertising_meta_request_count") > 0).height)
+        first_party_context = int(cell.filter(pl.col("has_first_party_context_tracker")).height)
+        pure_third_party = int(cell.filter(pl.col("has_pure_third_party_tracker")).height)
         return cls(
             run_label=run_label,
             site_count=site_count,
@@ -316,6 +329,10 @@ class GeolocationSummaryRow:
             advertising_google_pct=percent(advertising_google, advertising),
             advertising_owner_meta_site_count=advertising_meta,
             advertising_meta_pct=percent(advertising_meta, advertising),
+            first_party_context_tracker_site_count=first_party_context,
+            first_party_context_tracker_pct=percent(first_party_context, site_count),
+            pure_third_party_tracker_site_count=pure_third_party,
+            pure_third_party_tracker_pct=percent(pure_third_party, site_count),
         )
 
 

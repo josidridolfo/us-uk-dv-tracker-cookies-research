@@ -14,6 +14,10 @@ import polars as pl
 
 from dv_tracking.analysis.cookie_exfiltration import ExfilEdge
 from dv_tracking.classify.models import AnalyzedRequest, AnalyzedTrial
+from dv_tracking.classify.owners import (
+    FIRST_PARTY_TRACKING_COOKIE_CATEGORIES,
+    canonical_owner,
+)
 from dv_tracking.sites import DVSupportSite
 
 # Direct-service categories: a visit strongly implies the visitor is seeking help,
@@ -45,6 +49,13 @@ ANALYTICS_TRACKER_CATEGORIES: frozenset[str] = frozenset(
 
 GOOGLE_OWNER_NAME: str = "Google"
 META_OWNER_NAMES: frozenset[str] = frozenset({"Facebook", "Meta"})
+
+# Boolean flags that collapse to the longest-dwell trial's value instead of any-True.
+# The pure-3p / first-party-context split is read off the same reported (longest-dwell)
+# visit as the tracker-band counts, so its site denominator matches any_tracker_site_count.
+LONGEST_DWELL_BOOLEAN_COLUMNS: frozenset[str] = frozenset(
+    {"has_first_party_context_tracker", "has_pure_third_party_tracker"}
+)
 
 
 def in_band(request: AnalyzedRequest, band: frozenset[str]) -> bool:
@@ -116,6 +127,13 @@ class SitePrivacyFindings:
     advertising_google_request_count: int = 0
     advertising_meta_request_count: int = 0
 
+    # Third-party-tracker owners split by whether the SAME owner also kept a first-party
+    # tracking cookie on this site. A first-party-context owner (e.g. Google Analytics' _ga)
+    # survives third-party-cookie blocking; a pure-3p owner sets no first-party cookie here.
+    # An unknown-owner tracker (no Radar owner) counts as pure-3p: it cannot be shown first-party.
+    has_first_party_context_tracker: bool = False
+    has_pure_third_party_tracker: bool = False
+
     @staticmethod
     def art_9_tier_for_category(category: str) -> str:
         """
@@ -171,7 +189,7 @@ class SitePrivacyFindings:
                 continue
             if column == "blocked":
                 aggregations.append(pl.col(column).all().alias(column))
-            elif frame.schema[column] == pl.Boolean:
+            elif frame.schema[column] == pl.Boolean and column not in LONGEST_DWELL_BOOLEAN_COLUMNS:
                 aggregations.append(pl.col(column).any().alias(column))
             else:
                 # Longest-dwell collapse: numeric/identity cols take the highest-numbered
@@ -245,6 +263,30 @@ class SitePrivacyFindings:
         advertising_meta_request_count = sum(
             1 for request in advertising_trackers if request.tracker_owner in META_OWNER_NAMES
         )
+
+        # Owner-linked pure-3p / first-party-context split. A third-party tracker whose
+        # canonical owner has no known name (unknown Radar owner) can never be shown to keep
+        # a first-party cookie, so it is a pure-3p signal on its own.
+        third_party_tracker_owners = {
+            canonical_owner(request.tracker_owner) for request in third_party_trackers
+        }
+        has_unknown_owner_tracker = None in third_party_tracker_owners
+        third_party_tracker_owners.discard(None)
+        first_party_tracking_cookie_owners = {
+            canonical_owner(cookie.cookie_vendor)
+            for cookie in cookies
+            if not cookie.is_third_party
+            and cookie.cookie_category in FIRST_PARTY_TRACKING_COOKIE_CATEGORIES
+        }
+        first_party_tracking_cookie_owners.discard(None)
+        first_party_context_owners = (
+            third_party_tracker_owners & first_party_tracking_cookie_owners
+        )
+        pure_third_party_owners = (
+            third_party_tracker_owners - first_party_tracking_cookie_owners
+        )
+        has_first_party_context_tracker = bool(first_party_context_owners)
+        has_pure_third_party_tracker = bool(pure_third_party_owners) or has_unknown_owner_tracker
 
         classified_cookie_count = sum(1 for cookie in cookies if cookie.classification_matched)
         eprivacy_vendors = tuple(
@@ -358,6 +400,8 @@ class SitePrivacyFindings:
             other_tracker_request_count=other_tracker_request_count,
             advertising_google_request_count=advertising_google_request_count,
             advertising_meta_request_count=advertising_meta_request_count,
+            has_first_party_context_tracker=has_first_party_context_tracker,
+            has_pure_third_party_tracker=has_pure_third_party_tracker,
         )
 
 
