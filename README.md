@@ -1,5 +1,7 @@
 # us-uk-dv-tracker-cookies-research
 
+Work in progress.
+
 A sector-specific web-measurement study of pre-consent third-party tracking on
 United Kingdom and United States domestic violence support websites. The study
 visits each site with a fresh browser, records the network requests, cookies,
@@ -19,4 +21,5 @@ and `IPROYAL_PASSWORD`. The entry points (`dv-crawl`, `dv-validate-vpn`) load
 this file automatically, so no manual `source` step is needed. An already
 exported environment variable overrides the file value.
 
-Work in progress.
+## Sites & Results
+Available upon request to verified researchers. Message me or email me with the subject [UK-US DV Data Request]: josid@ridol.fo
