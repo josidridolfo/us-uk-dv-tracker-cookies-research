@@ -1,5 +1,7 @@
 # us-uk-dv-tracker-cookies-research
 
+Work in progress.
+
 A sector-specific web-measurement study of pre-consent third-party tracking on
 United Kingdom and United States domestic violence support websites. The study
 visits each site with a fresh browser, records the network requests, cookies,
@@ -32,4 +34,5 @@ matched by the database, and strictly-necessary cookies whose observed lifetime
 runs beyond the window. The reference instant is the crawl start recorded per
 trial, so the classification is stable across re-analysis.
 
-Work in progress.
+## Sites & Results
+Available upon request to verified researchers. Message me or email me with the subject [UK-US DV Data Request]: josid@ridol.fo
