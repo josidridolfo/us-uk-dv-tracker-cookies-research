@@ -114,24 +114,27 @@ class ObservedExit:
 
 @dataclass(frozen=True)
 class ExitCheck:
-    """The outcome of checking the relay's observed exit against an expected geolocation."""
+    """The outcome of checking a relay-observed exit against an expected geolocation."""
 
     expected_geolocation: str
-    exit_ip: str
-    resolved_country_code: str
-    resolved_geolocation: str | None
-    resolved_org: str
-    exit_is_residential: bool
-    passed: bool
+    observed: ObservedExit
     checked_at_utc: str
+
+    @property
+    def passed(self) -> bool:
+        """Whether the observed exit matches the expected country AND reads residential."""
+        return (
+            self.observed.country == EXPECTED_COUNTRY[self.expected_geolocation]
+            and self.observed.is_residential
+        )
 
     def as_provenance(self) -> dict:
         """The exit facts recorded as metadata provenance for a crawl."""
         return {
-            "ip": self.exit_ip,
-            "country": self.resolved_country_code,
-            "org": self.resolved_org,
-            "residential": self.exit_is_residential,
+            "ip": self.observed.ip,
+            "country": self.observed.country,
+            "org": self.observed.org,
+            "residential": self.observed.is_residential,
             "checked_at_utc": self.checked_at_utc,
         }
 
@@ -140,8 +143,6 @@ def utcnow_iso() -> str:
     """
     Return the current UTC time as an ISO 8601 string.
 
-    Args:
-        None
     Returns:
         timestamp: The current UTC instant in ISO 8601 format.
     """
@@ -158,8 +159,6 @@ def load_env_file(path: Path = PROJECT_ROOT / ".env") -> None:
 
     Args:
         path: The .env file to read; defaults to the repo-root .env.
-    Returns:
-        None
     """
     if not path.is_file():
         return
@@ -178,7 +177,7 @@ def load_env_file(path: Path = PROJECT_ROOT / ".env") -> None:
             os.environ.setdefault(key, value)
 
 
-def read_exit_through_relay(relay: RelayAddress) -> ObservedExit:
+def _read_exit_through_relay(relay: RelayAddress) -> ObservedExit:
     """
     Read the exit IP, country, and org through the relay a trial would use.
 
@@ -201,9 +200,15 @@ def read_exit_through_relay(relay: RelayAddress) -> ObservedExit:
         try:
             with opener.open(IP_GEOLOCATION_ENDPOINT, timeout=LOOKUP_TIMEOUT_SECONDS) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            return ObservedExit(
-                ip=payload["ip"], country=payload["country"], org=payload.get("org") or ""
-            )
+            # Subscripted before .get(), so a non-dict payload (list, str, int,
+            # null) raises the caught TypeError here rather than at .get().
+            ip = payload["ip"]
+            country = payload["country"]
+            # Coerced to str so a non-string org (e.g. a stray JSON number)
+            # cannot reach ObservedExit.is_residential's .lower() uncaught.
+            org = payload.get("org")
+            org = str(org) if org else ""
+            return ObservedExit(ip=ip, country=country, org=org)
         except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as cause:
             last_cause = cause
             if attempt < RELAY_READ_ATTEMPTS:
@@ -229,17 +234,9 @@ def check_exit(geolocation: str, relay: RelayAddress) -> ExitCheck:
     Raises:
         ExitReadError: When the exit could not be read through the relay.
     """
-    exit_observed = read_exit_through_relay(relay)
-    country_matches = exit_observed.country == EXPECTED_COUNTRY[geolocation]
-    passed = country_matches and exit_observed.is_residential
     return ExitCheck(
         expected_geolocation=geolocation,
-        exit_ip=exit_observed.ip,
-        resolved_country_code=exit_observed.country,
-        resolved_geolocation=exit_observed.geolocation,
-        resolved_org=exit_observed.org,
-        exit_is_residential=exit_observed.is_residential,
-        passed=passed,
+        observed=_read_exit_through_relay(relay),
         checked_at_utc=utcnow_iso(),
     )
 
@@ -270,16 +267,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if check.passed:
         print(
-            f"PASS: {arguments.geolocation} exit resolved to {check.exit_ip} "
-            f"({check.resolved_country_code}, residential)"
+            f"PASS: {arguments.geolocation} exit resolved to {check.observed.ip} "
+            f"({check.observed.country}, residential)"
         )
         return 0
 
-    resolved = check.resolved_geolocation or "an unmapped country"
-    exit_class = "residential" if check.exit_is_residential else "datacenter"
+    resolved = check.observed.geolocation or "an unmapped country"
+    exit_class = "residential" if check.observed.is_residential else "datacenter"
     print(
-        f"FAIL: {arguments.geolocation} exit resolved to {check.exit_ip} "
-        f"({check.resolved_country_code}, {resolved}, {exit_class})"
+        f"FAIL: {arguments.geolocation} exit resolved to {check.observed.ip} "
+        f"({check.observed.country}, {resolved}, {exit_class})"
     )
     print("Do NOT run the crawl.")
     return 1

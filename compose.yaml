@@ -17,7 +17,9 @@ services:
     # gost 3.0.0, digest resolved 2026-10-29.
     image: gogost/gost@sha256:c8d77e87ee87eb6f1c225ca17d175b79ca11753166741c901a43d51f1279877d
     platform: linux/amd64
-    restart: unless-stopped
+    # Bounded, unlike unless-stopped: Docker restarts with the original env, so
+    # a relay missing a routing variable would loop its own guard forever.
+    restart: on-failure:3
     environment:
       IPROYAL_HOST: ${IPROYAL_HOST:-geo.iproyal.com}
       IPROYAL_PORT: ${IPROYAL_PORT:-12321}

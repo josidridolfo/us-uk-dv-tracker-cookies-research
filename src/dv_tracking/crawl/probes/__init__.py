@@ -1,7 +1,8 @@
 """
 JavaScript probe payloads injected into pages during a crawl.
 
-Each probe's source is a sibling .js file read on demand for page.evaluate.
+Each probe's source is a sibling .js file, read on demand and evaluated in
+the page context by whichever instrument runs the crawl.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 // Probe: framework / CMP tell detection.
-// Called:  page.evaluate(source, cmpIdentifiers)
+// Invoked with: cmpIdentifiers
 // Returns: {usp_present, gpp_present, cmp_matches}
 // Side effects: none (typeof-checks and a read-only script-src scan).
 

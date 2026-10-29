@@ -34,7 +34,6 @@ dependencies = [
 ]
 
 [project.scripts]
-dv-check-exit = "dv_tracking.egress:main"
 dv-analyze = "dv_tracking.analysis.analyze:main"
 
 [project.optional-dependencies]

@@ -1,5 +1,5 @@
 // Probe: DOM heuristic for a cookie-consent banner, its close control, and a quick-exit button.
-// Called:  page.evaluate(source, {zIndexMin, keywords, excerptMax})
+// Invoked with: {zIndexMin, keywords, excerptMax}
 // Returns: {matched, evidence, close_button_present, quick_exit_present}
 // Side effects: none (read-only DOM walk).
 

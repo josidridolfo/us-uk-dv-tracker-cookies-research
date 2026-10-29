@@ -21,12 +21,14 @@ Country follows the jurisdiction under crawl and the session token is generated
 per run, so both are supplied at invocation; `IPROYAL_LIFETIME` defaults to
 `10m`. The relay refuses to start if any of the four is absent.
 
-The pre-crawl exit gate (`dv-check-exit`) reads `DV_RELAY_HOST` and
+The pre-crawl exit gate, invoked as `python -m dv_tracking.egress
+<geolocation>` inside the crawl container, reads `DV_RELAY_HOST` and
 `DV_RELAY_PORT` to find that listener. Both are required with no default, so an
 unset relay address fails the gate closed rather than resolving to some other
 listener on the machine. The gate runs inside the crawl container, which is
 where the relay's listener resolves and where the browser's own egress will be
-observed.
+observed; the project is not pip-installed into that image, so no console
+script exists there to run instead.
 
 No crawl entry point lives in this tree yet, so the raw write path (`RawStore`,
 a trial's `metadata.json` and its `exit_info` object) currently has no
@@ -72,16 +74,19 @@ IPROYAL_COUNTRY=gb IPROYAL_SESSION=$(openssl rand -hex 8) \
 Verifying the stack:
 
 ```bash
-docker compose run --rm crawl                    # imports OpenWPM
-docker compose run --rm -e HTTPS_PROXY=http://relay:8080 crawl \
-    python -c "import urllib.request as r, json; \
-print(json.load(r.urlopen('https://ipinfo.io/json')))"   # exit through the relay
+docker compose run --rm crawl       # imports OpenWPM
+./scripts/check-exit-gate.sh        # builds, starts a relay, and exercises the gate
 ```
 
-The explicit proxy variable on the second command matters: without it the
-request egresses directly and reports the host's own address rather than the
-residential exit. The pre-crawl gate enforces that the exit reads residential
-and in-country before any site is visited.
+`check-exit-gate.sh` builds the current image, starts the relay for a
+jurisdiction, and runs the gate through it end to end: a pass, a country
+mismatch, a malformed relay address, an unreachable relay, and a check that
+the gate's reported exit actually differs from the container's own unproxied
+egress -- a relay silently out of the path would otherwise pass case one for
+free on a UK residential connection. It manages the relay's own lifecycle and
+refuses to run against one already started for other work. The pre-crawl gate
+enforces that the exit reads residential and in-country before any site is
+visited.
 
 ## Cookie essentiality
 
