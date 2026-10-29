@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from dv_tracking import PROJECT_ROOT
 from dv_tracking.constants import (
@@ -117,7 +118,7 @@ class ObservedExit:
         return not any(keyword in lowered for keyword in DATACENTER_KEYWORDS)
 
     @property
-    def exit_class(self) -> str:
+    def exit_class(self) -> Literal["residential", "datacenter", "unclassifiable"]:
         """The verdict label: residential, datacenter, or unclassifiable when org is empty."""
         if self.is_residential:
             return "residential"
@@ -146,7 +147,7 @@ class ExitCheck:
             "ip": self.observed.ip,
             "country": self.observed.country,
             "org": self.observed.org,
-            "residential": self.observed.is_residential,
+            "exit_class": self.observed.exit_class,
             "checked_at_utc": self.checked_at_utc,
         }
 
