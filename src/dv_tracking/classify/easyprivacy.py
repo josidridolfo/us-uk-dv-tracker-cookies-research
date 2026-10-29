@@ -1,121 +1,98 @@
 """
-EasyPrivacy tracker classifier (host-only).
+EasyPrivacy tracker classifier.
 
-Parses `||host^` rules from a pinned EasyPrivacy snapshot, with or without the
-`$third-party`, `$3p`, or `$document` options. A host is flagged as a tracker
-when it, or a parent domain, is on the block list. Element-hiding rules
-(`##selector`) and exception rules (`@@||...^`) are dropped.
+Evaluates a pinned EasyPrivacy snapshot with the adblock-rust engine.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-import tldextract
+from adblock import Engine, FilterSet
 
-HOST_RULE_PREFIX: str = "||"
-HOST_RULE_SUFFIXES: tuple[str, ...] = ("^", "^$third-party", "^$3p", "^$document")
-
-# Pinned public-suffix snapshot bundled with tldextract; suffix_list_urls=() never fetches.
-EXTRACT: tldextract.TLDExtract = tldextract.TLDExtract(suffix_list_urls=())
+REQUEST_TYPE_BY_RESOURCE: dict[str, str] = {
+    "script": "script",
+    "image": "image",
+    "stylesheet": "stylesheet",
+    "font": "font",
+    "media": "media",
+    "ping": "ping",
+    "xhr": "xmlhttprequest",
+    "fetch": "xmlhttprequest",
+    "other": "other",
+}
 
 
 @dataclass(frozen=True)
 class EasyPrivacyMatcher:
-    """Host-only EasyPrivacy tracker classifier."""
+    """EasyPrivacy tracker classifier over a pinned snapshot."""
 
-    host_rule_count: int
     snapshot_path: Path
-    exact_hosts: frozenset[str]
-    suffix_hosts: frozenset[str]
-
-    @staticmethod
-    def parse_host_rule(rule: str) -> str | None:
-        """
-        Extracts the host from a `||host^...` rule.
-
-        Args:
-            rule: One EasyPrivacy rule line beginning with the host-rule prefix.
-        Returns:
-            host: The lowercased host, or None when the line is not a plain host rule.
-        """
-        body = rule[len(HOST_RULE_PREFIX):]
-        suffix_pos = body.find("^")
-        if suffix_pos < 0:
-            return None
-        host = body[:suffix_pos]
-        remainder = body[suffix_pos:]
-        if not host or "/" in host or "*" in host:
-            return None
-        if remainder not in HOST_RULE_SUFFIXES and not remainder.startswith("^$"):
-            return None
-        extracted = EXTRACT(host)
-        if not extracted.domain or not extracted.suffix:
-            return None
-        return host.lower()
+    rule_count: int
+    engine: Engine = field(compare=False, repr=False)
 
     @classmethod
     def from_snapshot(cls, path: Path) -> EasyPrivacyMatcher:
         """
-        Loads the host rules from an EasyPrivacy snapshot.
+        Builds a matcher from an EasyPrivacy snapshot.
 
         Args:
             path: Path to the EasyPrivacy text snapshot.
         Returns:
-            matcher: The host-only matcher built from the snapshot's host rules.
+            matcher: The matcher backed by the snapshot's network rules.
         """
         if not path.is_file():
             raise FileNotFoundError(f"EasyPrivacy snapshot not found at {path}")
-        hosts: set[str] = set()
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("!") or line.startswith("["):
-                continue
-            if not line.startswith(HOST_RULE_PREFIX):
-                continue
-            host = cls.parse_host_rule(line)
-            if host is None:
-                continue
-            hosts.add(host)
-        return cls(
-            host_rule_count=len(hosts),
-            snapshot_path=path,
-            exact_hosts=frozenset(hosts),
-            suffix_hosts=frozenset(hosts),
+        # drop blank lines and ``!`` comments
+        rules = [
+            line
+            for raw in path.read_text(encoding="utf-8").splitlines()
+            if (line := raw.strip()) and not line.startswith("!")
+        ]
+        filter_set = FilterSet()
+        filter_set.add_filters(rules)
+        return cls(snapshot_path=path, rule_count=len(rules), engine=Engine(filter_set))
+
+    @staticmethod
+    def request_type_for_resource(resource_type: str, *, is_third_party: bool) -> str:
+        """
+        Maps a Playwright resource type to the adblock-rust request_type string.
+
+        Args:
+            resource_type: The Playwright resource-type name.
+            is_third_party: Whether the request is third-party to the page origin.
+        Returns:
+            request_type: The adblock-rust request_type; framed documents map to
+                ``sub_frame`` and top-level documents to ``document``.
+        """
+        if resource_type == "document":
+            return "sub_frame" if is_third_party else "document"
+        return REQUEST_TYPE_BY_RESOURCE.get(resource_type, "other")
+
+    def is_tracker(
+        self, url: str, resource_type: str, is_third_party: bool, source_domain: str
+    ) -> bool:
+        """
+        Whether a request matches an EasyPrivacy block rule, honouring exceptions.
+
+        The engine derives party from ``source_url``; ``is_third_party`` only
+        selects the document vs framed request type.
+
+        Args:
+            url: The full request URL.
+            resource_type: The Playwright resource-type name.
+            is_third_party: Whether the request is third-party to the page origin.
+            source_domain: The registered domain of the visited page.
+        Returns:
+            tracker: True when a block rule matches and no ``@@`` exception overrides it.
+        """
+        request_type = self.request_type_for_resource(
+            resource_type, is_third_party=is_third_party
         )
-
-    def is_tracker(self, host: str) -> bool:
-        """
-        Whether a host matches a block rule directly or via a parent domain.
-
-        Args:
-            host: The request host.
-        Returns:
-            tracker: True when the host or a parent domain is on the block list.
-        """
-        if not host:
-            return False
-        cleaned = host.lower().strip(".")
-        if cleaned in self.exact_hosts or cleaned in self.suffix_hosts:
-            return True
-        parts = cleaned.split(".")
-        for index in range(1, len(parts)):
-            candidate = ".".join(parts[index:])
-            if candidate in self.suffix_hosts:
-                return True
-        return False
-
-    def is_tracker_domain(self, registered_domain: str) -> bool:
-        """
-        Whether a registered domain matches a block rule.
-
-        Args:
-            registered_domain: The registered domain to test.
-        Returns:
-            tracker: True when the registered domain is on the block list.
-        """
-        if not registered_domain:
-            return False
-        candidate = registered_domain.lower()
-        return candidate in self.exact_hosts or candidate in self.suffix_hosts
+        result = self.engine.check_network_urls(
+            url=url,
+            source_url=f"https://{source_domain}/",
+            request_type=request_type,
+        )
+        return result.matched

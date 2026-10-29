@@ -1,12 +1,15 @@
 """
-First-party cookie values (and value/name components) reaching a third-party URL.
+Cookie values (and value/name components) reaching a third-party URL.
 
-Detects when a first-party cookie value (identifier-like) appears in an outgoing
-third-party request URL -- verbatim or Base64/MD5/SHA-1/SHA-256 encoded
-(full_value) -- and, in reverse, when a long identifier token lifted from the
-request URL is a component of a first-party cookie value (value_component) or
-name (name_component). This is the URL-channel, un-attributed, lower-bound
-subset: it observes the value reaching a third-party endpoint via the URL only.
+Detects when a cookie value (identifier-like) appears in an outgoing third-party
+request URL -- verbatim or Base64/MD5/SHA-1/SHA-256 encoded (full_value) -- and,
+in reverse, when a long identifier token lifted from the request URL is a
+component of a cookie value (value_component) or name (name_component). Every
+cookie is scanned, first- and third-party; each edge carries whether its source
+cookie is first-party and whether the destination is a known tracker, so the R2
+(exfil to a tracker) and R3 (first-party cookie to a tracker) subsets can be read
+off the edges. This is the URL-channel, un-attributed, lower-bound subset: it
+observes the value reaching a third-party endpoint via the URL only.
 """
 
 from __future__ import annotations
@@ -24,23 +27,34 @@ MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
 HASH_ENCODINGS: frozenset[str] = frozenset({"md5", "sha1", "sha256"})
 # Id separators, minus `.` -- keeps the dotted GA client id `<rand>.<ts>` one token.
 TOKEN_SEPARATOR_PATTERN: re.Pattern[str] = re.compile(r"[-_/:~|$+,;=&\s]+")
+# Characters of surrounding URL context kept on each side of the matched token in the excerpt.
+EXCERPT_MARGIN: int = 24
 
 
 @dataclass(frozen=True)
 class ExfilEdge:
-    """One first-party cookie value (or component) observed reaching a third-party endpoint."""
+    """One cookie value (or component) observed reaching a third-party endpoint."""
 
     cookie_name: str
     cookie_registered_domain: str
     cookie_vendor: str
     cookie_category: str
+    # Whether the source cookie is first-party (top-origin) rather than a third-party cookie.
+    cookie_is_first_party: bool
     dest_host: str
     dest_registered_domain: str
+    # Whether the destination request is a known tracker (EP/DDG); the R2 exfil gate.
+    dest_is_tracker: bool
     dest_url: str
     encoding: str
     value_len: int
+    # full_value/value_component = per-user identifier bits; name_component = shared cookie name
+    # (property-level, e.g. _ga).
     match_kind: str
     matched_token: str
+    cookie_value: str
+    matched_offset: int
+    dest_url_excerpt: str
 
     @staticmethod
     def encode_variants(value: str) -> dict[str, str]:
@@ -122,35 +136,39 @@ class ExfilEdge:
     @classmethod
     def find_all(cls, analyzed_trial: AnalyzedTrial) -> list[ExfilEdge]:
         """
-        Finds first-party cookie values and components reaching a third-party request URL.
+        Finds cookie values and components reaching a third-party request URL.
+
+        Scans over all cookies (first- and third-party) so an exfil edge exists for
+        any cookie whose value reaches a third-party endpoint; the R2/R3 gates
+        (dest_is_tracker, cookie_is_first_party) are carried on each edge.
 
         Args:
             analyzed_trial: The analyzed trial whose cookies and requests are scanned.
         Returns:
             edges: One edge per (cookie, destination, match_kind, encoding), deduplicated.
         """
-        first_party_cookies = [
-            cookie for cookie in analyzed_trial.analyzed_cookies if not cookie.is_third_party
-        ]
-        if not first_party_cookies:
+        cookies = list(analyzed_trial.analyzed_cookies)
+        if not cookies:
             return []
+        # Echo suppression stays scoped to first-party cookie domains; it is not
+        # widened to third-party cookie domains.
         domain_label = next(
             (
                 cookie.registered_domain.split(".")[0].lower()
-                for cookie in first_party_cookies
-                if cookie.registered_domain
+                for cookie in cookies
+                if not cookie.is_third_party and cookie.registered_domain
             ),
             "",
         )
         needles: dict[str, tuple[AnalyzedCookie, str]] = {}
-        for cookie in first_party_cookies:
+        for cookie in cookies:
             if cls.is_identifier_value(cookie.value):
                 for encoding, needle in cls.encode_variants(cookie.value).items():
                     needles.setdefault(needle, (cookie, encoding))
 
         edges: dict[tuple, ExfilEdge] = {}
         full_covered: set[tuple] = set()
-        pending: list[tuple[AnalyzedCookie, str, str, str, str, str]] = []
+        pending: list[tuple[AnalyzedCookie, str, str, str, bool, str, str]] = []
         for request in analyzed_trial.analyzed_requests:
             if not request.is_third_party:
                 continue
@@ -160,6 +178,8 @@ class ExfilEdge:
             for needle, (cookie, encoding) in needles.items():
                 if cookie.registered_domain == request.registered_domain:
                     continue
+                # Hex digests are lowercase -> case-insensitive; base64/plaintext are
+                # case-sensitive -> matched verbatim.
                 searched = lowered if encoding in HASH_ENCODINGS else haystacks
                 if any(needle in haystack for haystack in searched):
                     destination = (cookie.name, request.host, request.registered_domain)
@@ -167,9 +187,10 @@ class ExfilEdge:
                     edges.setdefault(
                         (*destination, "full_value", encoding),
                         cls.build_edge(cookie, request.host, request.registered_domain,
-                                       request.url, encoding, "full_value", needle),
+                                       request.is_tracker, request.url, encoding,
+                                       "full_value", needle),
                     )
-            # Direction 2: an id token from the URL is a component of a first-party cookie.
+            # Direction 2: an id token from the URL is a component of a cookie value/name.
             tokens = {
                 token
                 for haystack in haystacks
@@ -177,30 +198,59 @@ class ExfilEdge:
                 if cls.is_identifier_token(token, domain_label)
             }
             for token in tokens:
-                for cookie in first_party_cookies:
+                for cookie in cookies:
                     if cookie.registered_domain == request.registered_domain:
                         continue
                     if token in cookie.value and len(token) < len(cookie.value):
                         pending.append(
                             (cookie, request.host, request.registered_domain, request.url,
-                             "value_component", token)
+                             request.is_tracker, "value_component", token)
                         )
                     elif token in cookie.name and token not in cookie.value:
                         pending.append(
                             (cookie, request.host, request.registered_domain, request.url,
-                             "name_component", token)
+                             request.is_tracker, "name_component", token)
                         )
 
         # Resolved after the pass so full_covered is complete regardless of request order.
-        for cookie, host, registered_domain, url, kind, token in pending:
+        for cookie, host, registered_domain, url, dest_is_tracker, kind, token in pending:
             destination = (cookie.name, host, registered_domain)
             if kind == "value_component" and destination in full_covered:
                 continue
             edges.setdefault(
                 (*destination, kind, "plaintext"),
-                cls.build_edge(cookie, host, registered_domain, url, "plaintext", kind, token),
+                cls.build_edge(cookie, host, registered_domain, dest_is_tracker, url,
+                               "plaintext", kind, token),
             )
         return list(edges.values())
+
+    @staticmethod
+    def locate_in_url(dest_url: str, matched_token: str, encoding: str) -> tuple[int, str]:
+        """
+        Locates the matched token in the destination URL and excerpts its surrounding context.
+
+        Searches the URL verbatim, then percent-decoded; hash encodings compare
+        case-insensitively, mirroring the lowered-search over HASH_ENCODINGS. The
+        excerpt is sliced from the same string the offset indexes into.
+
+        Args:
+            dest_url: The destination request URL the token was observed in.
+            matched_token: The needle or token that matched, as stored on the edge.
+            encoding: The encoding label the value matched under.
+        Returns:
+            location: The offset and surrounding excerpt, or (-1, leading excerpt) on no hit.
+        """
+        for form in (dest_url, unquote(dest_url)):
+            searched = form.lower() if encoding in HASH_ENCODINGS else form
+            offset = searched.find(matched_token)
+            if offset != -1:
+                start = max(0, offset - EXCERPT_MARGIN)
+                end = offset + len(matched_token) + EXCERPT_MARGIN
+                return offset, searched[start:end]
+        # Tries raw then percent-decoded, not parse_qs's '+'->space form; a token matched via a
+        # '+'-encoded query value falls to (-1, leading excerpt) -- evidence display only, never
+        # affects the count.
+        return -1, dest_url[: 2 * EXCERPT_MARGIN]
 
     @classmethod
     def build_edge(
@@ -208,6 +258,7 @@ class ExfilEdge:
         cookie: AnalyzedCookie,
         dest_host: str,
         dest_registered_domain: str,
+        dest_is_tracker: bool,
         dest_url: str,
         encoding: str,
         match_kind: str,
@@ -217,9 +268,10 @@ class ExfilEdge:
         Builds one exfiltration edge from a cookie and its destination request.
 
         Args:
-            cookie: The first-party cookie whose value or component was found.
+            cookie: The cookie whose value or component was found.
             dest_host: The destination request host.
             dest_registered_domain: The destination registered domain.
+            dest_is_tracker: Whether the destination request is a known tracker (R2 gate).
             dest_url: The destination request URL.
             encoding: The encoding label the value matched under.
             match_kind: One of "full_value", "value_component", "name_component".
@@ -227,16 +279,22 @@ class ExfilEdge:
         Returns:
             edge: The exfiltration edge.
         """
+        matched_offset, dest_url_excerpt = cls.locate_in_url(dest_url, matched_token, encoding)
         return cls(
             cookie_name=cookie.name,
             cookie_registered_domain=cookie.registered_domain,
             cookie_vendor=cookie.cookie_vendor,
             cookie_category=cookie.cookie_category,
+            cookie_is_first_party=not cookie.is_third_party,
             dest_host=dest_host,
             dest_registered_domain=dest_registered_domain,
+            dest_is_tracker=dest_is_tracker,
             dest_url=dest_url,
             encoding=encoding,
             value_len=len(cookie.value),
             match_kind=match_kind,
             matched_token=matched_token,
+            cookie_value=cookie.value,
+            matched_offset=matched_offset,
+            dest_url_excerpt=dest_url_excerpt,
         )

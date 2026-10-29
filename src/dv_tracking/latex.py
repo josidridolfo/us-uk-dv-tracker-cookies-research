@@ -26,6 +26,7 @@ class LatexTable:
         alignments: tuple[str, ...] | None = None,
         column_formats: dict[str, int] | None = None,
         header_overrides: dict[str, str] | None = None,
+        preamble: str | None = None,
     ) -> None:
         """
         Binds the table to a frame and its rendering configuration.
@@ -37,6 +38,7 @@ class LatexTable:
             alignments: One alignment letter per column; inferred from dtype when None.
             column_formats: Per-column decimal places for float columns; DEFAULT_DECIMALS otherwise.
             header_overrides: Display headers keyed by column name; the column name is used otherwise.
+            preamble: Text emitted before the table environment (e.g. provenance comments), or None.
         Returns:
             None
         """
@@ -46,6 +48,7 @@ class LatexTable:
         self.alignments = alignments
         self.column_formats = column_formats or {}
         self.header_overrides = header_overrides or {}
+        self.preamble = preamble
 
     def column_alignments(self) -> tuple[str, ...]:
         """
@@ -124,6 +127,7 @@ class LatexTable:
         """
         header = " & ".join(self.header_labels()) + r" \\"
         lines = [
+            *([self.preamble] if self.preamble else []),
             r"\begin{table}[htbp]",
             r"\centering",
             rf"\caption{{{self.caption}}}",

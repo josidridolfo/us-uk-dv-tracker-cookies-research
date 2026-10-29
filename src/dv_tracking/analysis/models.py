@@ -12,7 +12,12 @@ from dataclasses import asdict, dataclass
 
 import polars as pl
 
-from dv_tracking.classify.models import AnalyzedTrial
+from dv_tracking.analysis.cookie_exfiltration import ExfilEdge
+from dv_tracking.classify.models import AnalyzedRequest, AnalyzedTrial
+from dv_tracking.classify.owners import (
+    FIRST_PARTY_TRACKING_COOKIE_CATEGORIES,
+    canonical_owner,
+)
 from dv_tracking.sites import DVSupportSite
 
 # Direct-service categories: a visit strongly implies the visitor is seeking help,
@@ -31,6 +36,38 @@ IDENTITY_SPECIFIC_CATEGORIES: frozenset[str] = frozenset(
 ART9_IMPLICATED_CATEGORIES: frozenset[str] = (
     DIRECT_SERVICE_CATEGORIES | IDENTITY_SPECIFIC_CATEGORIES
 )
+
+# Advertising / cross-site band: DDG categories that mark ad-motivated or pixel tracking.
+ADVERTISING_TRACKER_CATEGORIES: frozenset[str] = frozenset(
+    {"Advertising", "Ad Motivated Tracking", "Ad Fraud", "Action Pixels"}
+)
+# Analytics / measurement band: DDG categories for audience and behaviour measurement.
+# The two bands overlap (a request may carry both) and are never summed.
+ANALYTICS_TRACKER_CATEGORIES: frozenset[str] = frozenset(
+    {"Analytics", "Audience Measurement", "Third-Party Analytics Marketing", "Session Replay"}
+)
+
+GOOGLE_OWNER_NAME: str = "Google"
+META_OWNER_NAMES: frozenset[str] = frozenset({"Facebook", "Meta"})
+
+# Boolean flags that collapse to the longest-dwell trial's value instead of any-True.
+# The pure-3p / first-party-context split is read off the same reported (longest-dwell)
+# visit as the tracker-band counts, so its site denominator matches any_tracker_site_count.
+LONGEST_DWELL_BOOLEAN_COLUMNS: frozenset[str] = frozenset(
+    {
+        "has_first_party_context_tracker",
+        "has_pure_third_party_tracker",
+        "has_exfiltration",
+        "third_party_exfil",
+        "first_party_cookie_exfil",
+        "art_9_exfil",
+    }
+)
+
+
+def in_band(request: AnalyzedRequest, band: frozenset[str]) -> bool:
+    """True when a request carries any tracker category in the given band."""
+    return bool(set(request.tracker_categories) & band)
 
 
 @dataclass(frozen=True)
@@ -52,6 +89,8 @@ class SitePrivacyFindings:
     classified_cookie_count: int
     unknown_cookie_count: int
     tracking_cookie_count: int
+    non_essential_cookie_count: int
+    necessary_but_long_lived_cookie_count: int
     eprivacy_5_3_candidate_count: int
     eprivacy_5_3_vendors: tuple[str, ...]
 
@@ -64,8 +103,14 @@ class SitePrivacyFindings:
     both_lists_request_count: int
 
     banner_present: bool
+    # Spec-verified CMP signal (TCF/USP/GPP APIs or a Consent-O-Matic selector match).
+    banner_api_verified: bool
+    # DOM/hostname-only detection with no API confirmation; the unvalidated bucket.
+    banner_heuristic_only: bool
     banner_primary_method: str | None
     cmp_vendor: str | None
+    # Confidence ladder: api_verified > vendor_observed > heuristic_only > none.
+    cmp_confidence_tier: str
     hosting_platform: str
     # First-party (top-origin) localStorage only; cross-origin iframe stores are out of scope.
     first_party_local_storage_key_count: int
@@ -75,7 +120,35 @@ class SitePrivacyFindings:
     art_9_tier: str
     art_9_tracking_cookie_present: bool
     art_9_tracker_request_present: bool
-    art_9_transmission_present: bool
+    # R2 on an Art 9 visit: implicated AND a cookie value reaches a known tracker.
+    art_9_exfil: bool
+    # R2: any cookie value reaches a known-tracker destination (dest_is_tracker edge).
+    third_party_exfil: bool
+    # R3: R2 with a first-party source cookie (dest_is_tracker AND cookie_is_first_party).
+    first_party_cookie_exfil: bool
+
+    exfiltration_edge_count: int = 0
+    has_exfiltration: bool = False
+
+    # Three overlapping bands over the third-party trackers; longest-dwell counts, never summed.
+    advertising_tracker_request_count: int = 0
+    analytics_tracker_request_count: int = 0
+    # "Other": a third-party tracker in neither band, including EP-only uncategorised hits.
+    other_tracker_request_count: int = 0
+    # Owner concentration over the advertising band (two-vendor Google / Meta split).
+    advertising_google_request_count: int = 0
+    advertising_meta_request_count: int = 0
+
+    # Third-party-tracker owners split by whether the SAME owner also kept a first-party
+    # tracking cookie on this site. A first-party-context owner (e.g. Google Analytics' _ga)
+    # survives third-party-cookie blocking; a pure-3p owner sets no first-party cookie here.
+    # An unknown-owner tracker (no Radar owner) counts as pure-3p: it cannot be shown first-party.
+    has_first_party_context_tracker: bool = False
+    has_pure_third_party_tracker: bool = False
+
+    # DV-sector "leave this site" / quick-exit control detected in the DOM. Collapses any-True
+    # across trials (a near-static site feature), like the other banner flags.
+    quick_exit_present: bool = False
 
     @staticmethod
     def art_9_tier_for_category(category: str) -> str:
@@ -132,9 +205,11 @@ class SitePrivacyFindings:
                 continue
             if column == "blocked":
                 aggregations.append(pl.col(column).all().alias(column))
-            elif frame.schema[column] == pl.Boolean:
+            elif frame.schema[column] == pl.Boolean and column not in LONGEST_DWELL_BOOLEAN_COLUMNS:
                 aggregations.append(pl.col(column).any().alias(column))
             else:
+                # Longest-dwell collapse: numeric/identity cols take the highest-numbered
+                # non-blocked trial; booleans any-True, blocked all-True.
                 aggregations.append(
                     pl.col(column).sort_by(order, descending=descending).first().alias(column)
                 )
@@ -143,7 +218,7 @@ class SitePrivacyFindings:
     @classmethod
     def art_9_denominator(cls, frame: pl.DataFrame) -> int:
         """
-        The denominator for Art 9 transmission rates: the count of implicated sites.
+        The denominator for the Art 9 exfil rate: the count of implicated sites.
 
         Args:
             frame: A site-level findings frame.
@@ -173,9 +248,61 @@ class SitePrivacyFindings:
         banner = analyzed_trial.banner_finding
 
         third_party_requests = [request for request in requests if request.is_third_party]
-        tracker_requests = [request for request in requests if request.is_tracker]
+        # A tracker request is third-party AND on EP/DDG; first-party EP/DDG hits are not counted.
+        tracker_requests = [
+            request for request in requests if request.is_third_party and request.is_tracker
+        ]
         third_party_domains = {request.registered_domain for request in third_party_requests}
         tracker_domains = {request.registered_domain for request in tracker_requests}
+
+        third_party_trackers = [
+            request for request in requests if request.is_third_party and request.is_tracker
+        ]
+        advertising_trackers = [
+            request
+            for request in third_party_trackers
+            if in_band(request, ADVERTISING_TRACKER_CATEGORIES)
+        ]
+        advertising_tracker_request_count = len(advertising_trackers)
+        analytics_tracker_request_count = sum(
+            1 for request in third_party_trackers if in_band(request, ANALYTICS_TRACKER_CATEGORIES)
+        )
+        other_tracker_request_count = sum(
+            1
+            for request in third_party_trackers
+            if not in_band(request, ADVERTISING_TRACKER_CATEGORIES)
+            and not in_band(request, ANALYTICS_TRACKER_CATEGORIES)
+        )
+        advertising_google_request_count = sum(
+            1 for request in advertising_trackers if request.tracker_owner == GOOGLE_OWNER_NAME
+        )
+        advertising_meta_request_count = sum(
+            1 for request in advertising_trackers if request.tracker_owner in META_OWNER_NAMES
+        )
+
+        # Owner-linked pure-3p / first-party-context split. A third-party tracker whose
+        # canonical owner has no known name (unknown Radar owner) can never be shown to keep
+        # a first-party cookie, so it is a pure-3p signal on its own.
+        third_party_tracker_owners = {
+            canonical_owner(request.tracker_owner) for request in third_party_trackers
+        }
+        has_unknown_owner_tracker = None in third_party_tracker_owners
+        third_party_tracker_owners.discard(None)
+        first_party_tracking_cookie_owners = {
+            canonical_owner(cookie.cookie_vendor)
+            for cookie in cookies
+            if not cookie.is_third_party
+            and cookie.cookie_category in FIRST_PARTY_TRACKING_COOKIE_CATEGORIES
+        }
+        first_party_tracking_cookie_owners.discard(None)
+        first_party_context_owners = (
+            third_party_tracker_owners & first_party_tracking_cookie_owners
+        )
+        pure_third_party_owners = (
+            third_party_tracker_owners - first_party_tracking_cookie_owners
+        )
+        has_first_party_context_tracker = bool(first_party_context_owners)
+        has_pure_third_party_tracker = bool(pure_third_party_owners) or has_unknown_owner_tracker
 
         classified_cookie_count = sum(1 for cookie in cookies if cookie.classification_matched)
         eprivacy_vendors = tuple(
@@ -188,12 +315,43 @@ class SitePrivacyFindings:
             )
         )
 
+        # Category-derived visit context (observed behaviour), not a legal Art 9 determination.
         art_9_implicated = site.category in ART9_IMPLICATED_CATEGORIES
         # Scoped to implicated sites: the art_9_ prefix means "on an Art 9 visit".
+        # ePrivacy 5(3) candidates only (analytics/marketing); narrower than tracking_cookie_count.
         tracking_cookie_present = art_9_implicated and any(
             cookie.is_eprivacy_5_3_candidate for cookie in cookies
         )
         tracker_request_present = art_9_implicated and bool(tracker_requests)
+
+        banner_api_verified = (
+            banner.tcf_present
+            or banner.consentomatic_matched
+            or banner.usp_api_present
+            or banner.gpp_api_present
+        )
+        vendor_observed = banner.hostname_match is not None
+        # A pinned CMP host loading (vendor_observed) is a firmer tell than the bare
+        # DOM/z-index heuristic, so it no longer collapses into the heuristic bucket.
+        if banner_api_verified:
+            cmp_confidence_tier = "api_verified"
+        elif vendor_observed:
+            cmp_confidence_tier = "vendor_observed"
+        elif banner.banner_present:
+            cmp_confidence_tier = "heuristic_only"
+        else:
+            cmp_confidence_tier = "none"
+        banner_heuristic_only = cmp_confidence_tier == "heuristic_only"
+
+        edges = ExfilEdge.find_all(analyzed_trial)
+        # R2: a cookie value reaches a known-tracker destination.
+        has_third_party_exfil = any(edge.dest_is_tracker for edge in edges)
+        # R3: R2 whose source cookie is first-party.
+        has_first_party_cookie_exfil = any(
+            edge.dest_is_tracker and edge.cookie_is_first_party for edge in edges
+        )
+        # R2 scoped to an Art 9 visit; replaces the old cookie-set-or-request-seen definition.
+        art_9_exfil = art_9_implicated and has_third_party_exfil
 
         return cls(
             site_id=site.site_id,
@@ -209,10 +367,18 @@ class SitePrivacyFindings:
             third_party_cookie_count=sum(1 for cookie in cookies if cookie.is_third_party),
             classified_cookie_count=classified_cookie_count,
             unknown_cookie_count=len(cookies) - classified_cookie_count,
+            # classification_matched and not strictly-necessary: includes analytics/marketing/
+            # preferences and matched-but-unmapped; broader than the ePrivacy 5(3) subset.
             tracking_cookie_count=sum(
                 1
                 for cookie in cookies
                 if cookie.classification_matched and not cookie.is_strictly_necessary
+            ),
+            non_essential_cookie_count=sum(1 for cookie in cookies if not cookie.is_essential),
+            necessary_but_long_lived_cookie_count=sum(
+                1
+                for cookie in cookies
+                if cookie.is_strictly_necessary and not cookie.is_essential
             ),
             eprivacy_5_3_candidate_count=sum(
                 1 for cookie in cookies if cookie.is_eprivacy_5_3_candidate
@@ -232,8 +398,11 @@ class SitePrivacyFindings:
                 1 for request in tracker_requests if request.tracker_source == "both"
             ),
             banner_present=banner.banner_present,
+            banner_api_verified=banner_api_verified,
+            banner_heuristic_only=banner_heuristic_only,
             banner_primary_method=banner.primary_method,
             cmp_vendor=banner.cmp_vendor,
+            cmp_confidence_tier=cmp_confidence_tier,
             hosting_platform=analyzed_trial.hosting_platform.platform,
             first_party_local_storage_key_count=(
                 len(analyzed_trial.local_storage.entries)
@@ -245,5 +414,42 @@ class SitePrivacyFindings:
             art_9_tier=cls.art_9_tier_for_category(site.category),
             art_9_tracking_cookie_present=tracking_cookie_present,
             art_9_tracker_request_present=tracker_request_present,
-            art_9_transmission_present=tracking_cookie_present or tracker_request_present,
+            # Observed behaviour: a cookie value actually reaches a known tracker on an
+            # Art 9 visit (R2), not merely a cookie set or a tracker request seen.
+            art_9_exfil=art_9_exfil,
+            third_party_exfil=has_third_party_exfil,
+            first_party_cookie_exfil=has_first_party_cookie_exfil,
+            exfiltration_edge_count=len(edges),
+            has_exfiltration=bool(edges),
+            advertising_tracker_request_count=advertising_tracker_request_count,
+            analytics_tracker_request_count=analytics_tracker_request_count,
+            other_tracker_request_count=other_tracker_request_count,
+            advertising_google_request_count=advertising_google_request_count,
+            advertising_meta_request_count=advertising_meta_request_count,
+            has_first_party_context_tracker=has_first_party_context_tracker,
+            has_pure_third_party_tracker=has_pure_third_party_tracker,
+            quick_exit_present=banner.quick_exit_present,
         )
+
+
+def longest_dwell_trials(frame: pl.DataFrame) -> pl.DataFrame:
+    """
+    The one (site, geo, trial) triple to keep per site: the longest successful dwell.
+
+    Request-level twin of SitePrivacyFindings.site_level_frame's collapse rule: over
+    non-blocked rows only, take the highest trial number per (site_id, geolocation).
+    All-blocked sites have no non-blocked row and so drop out, matching summary's set.
+
+    Args:
+        frame: A per-request findings frame with site_id, geolocation, trial, blocked.
+    Returns:
+        selector: One row per surviving (site_id, geolocation) with its kept trial;
+            empty (with those columns) when the frame is empty.
+    """
+    if frame.is_empty():
+        return pl.DataFrame(schema={"site_id": pl.String, "geolocation": pl.String, "trial": pl.Int64})
+    return (
+        frame.filter(~pl.col("blocked"))
+        .group_by(["site_id", "geolocation"])
+        .agg(pl.col("trial").max())
+    )

@@ -31,6 +31,7 @@ dependencies = [
     "duckdb>=0.10",
     "tldextract>=5.0",
     "polars>=0.20",
+    "adblock==0.6.0",
 ]
 
 [project.scripts]

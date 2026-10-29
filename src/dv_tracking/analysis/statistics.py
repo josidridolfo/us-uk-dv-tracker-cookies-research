@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import polars as pl
+
 DEFAULT_PERCENTILES: tuple[int, ...] = (10, 25, 50, 75, 90, 99)
 
 
@@ -47,6 +49,11 @@ def proportion(count: int, total: int) -> float:
     if total == 0:
         return 0.0
     return count / total
+
+
+def percent(count: int, total: int) -> float:
+    """count / total as a percentage, or 0.0 when total is zero."""
+    return proportion(count, total) * 100
 
 
 @dataclass(frozen=True)
@@ -94,3 +101,8 @@ class DistributionSummary:
             maximum=ordered[-1],
             percentiles={point: percentile_of(ordered, point) for point in percentiles},
         )
+
+
+def column_median(cell: pl.DataFrame, column: str) -> float:
+    """The median of one frame column."""
+    return DistributionSummary.from_values(cell.get_column(column).to_list()).median

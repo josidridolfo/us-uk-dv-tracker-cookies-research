@@ -10,6 +10,7 @@ carry them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -28,6 +29,9 @@ if TYPE_CHECKING:
 MINIMUM_IDENTIFIER_LENGTH: int = 8
 MINIMUM_IDENTIFIER_DISTINCT_CHARS: int = 5
 
+# Observed-lifetime cutoff separating short-lived from long-lived cookies (30 days).
+SHORT_LIVED_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60
+
 
 @dataclass(frozen=True)
 class AnalyzedRequest:
@@ -42,6 +46,7 @@ class AnalyzedRequest:
     is_tracker: bool
     tracker_source: str
     tracker_categories: tuple[str, ...]
+    tracker_owner: str | None = None
 
     @classmethod
     def from_raw(
@@ -57,18 +62,21 @@ class AnalyzedRequest:
         Args:
             raw: The captured raw request.
             page_origin_domain: The registered domain of the visited page.
-            ep_matcher: The host-only EasyPrivacy matcher.
+            ep_matcher: An EasyPrivacyMatcher.
             radar: The DDG Tracker Radar index.
         Returns:
             analyzed: The request carrying its derived party and tracker fields.
         """
         registered_domain = registered_domain_for_host(raw.host)
         is_third_party = is_third_party_to_origin(registered_domain, page_origin_domain)
-        ep_hit = ep_matcher.is_tracker(raw.host)
+        ep_hit = ep_matcher.is_tracker(
+            raw.url, raw.resource_type, is_third_party, page_origin_domain
+        )
         ddg_hit = radar.is_tracker(raw.host)
         tracker_source = cls.tracker_source_label(ep_hit=ep_hit, ddg_hit=ddg_hit)
         radar_entry = radar.lookup(raw.host)
         tracker_categories = radar_entry.categories if radar_entry is not None else ()
+        tracker_owner = radar_entry.owner if radar_entry is not None else None
         return cls(
             url=raw.url,
             host=raw.host,
@@ -79,6 +87,7 @@ class AnalyzedRequest:
             is_tracker=ep_hit or ddg_hit,
             tracker_source=tracker_source,
             tracker_categories=tracker_categories,
+            tracker_owner=tracker_owner,
         )
 
     @staticmethod
@@ -115,11 +124,16 @@ class AnalyzedCookie:
     same_site: str
     value: str
     registered_domain: str
+    # The cookie's domain party (first vs third party by registered domain). A cookie set under the
+    # host domain -- even by a third-party script -- is first-party; a first-party value that then
+    # reaches a third party is a first-party-context-third-party case, captured as an exfiltration edge.
     is_third_party: bool
     classification_matched: bool
     cookie_category: str
     cookie_vendor: str
     is_strictly_necessary: bool
+    # Strictly-necessary AND short-lived by observed lifetime; everything else is non-essential.
+    is_essential: bool
     is_eprivacy_5_3_candidate: bool
     has_identifier_value: bool
 
@@ -139,9 +153,19 @@ class AnalyzedCookie:
             and len(set(value)) >= MINIMUM_IDENTIFIER_DISTINCT_CHARS
         )
 
+    @staticmethod
+    def is_essential_cookie(
+        *, is_strictly_necessary: bool, is_session: bool, expires_unix: float, now: float
+    ) -> bool:
+        """Strictly necessary and short-lived by observed lifetime (session or expiring within the window)."""
+        # Already-expired cookies (expiry in the past) also fall here -- treated short-lived,
+        # hence essential when strictly necessary.
+        short_lived = is_session or expires_unix <= now + SHORT_LIVED_MAX_AGE_SECONDS
+        return is_strictly_necessary and short_lived
+
     @classmethod
     def from_raw(
-        cls, raw: RawCookie, cookie_db: CookieDatabase, page_origin_domain: str
+        cls, raw: RawCookie, cookie_db: CookieDatabase, page_origin_domain: str, now: float
     ) -> AnalyzedCookie:
         """
         Derives the party and classification flags for a raw cookie.
@@ -150,6 +174,7 @@ class AnalyzedCookie:
             raw: The captured raw cookie.
             cookie_db: The cookie database used to classify the cookie name.
             page_origin_domain: The registered domain of the visited page.
+            now: The crawl instant (unix seconds) used as the essentiality reference.
         Returns:
             analyzed: The cookie carrying its derived party and classification.
         """
@@ -172,6 +197,12 @@ class AnalyzedCookie:
             cookie_category=classification.category,
             cookie_vendor=classification.vendor,
             is_strictly_necessary=classification.is_strictly_necessary,
+            is_essential=cls.is_essential_cookie(
+                is_strictly_necessary=classification.is_strictly_necessary,
+                is_session=raw.is_session,
+                expires_unix=raw.expires_unix,
+                now=now,
+            ),
             is_eprivacy_5_3_candidate=classification.is_eprivacy_5_3_candidate,
             has_identifier_value=cls.has_identifier(raw.value),
         )
@@ -179,12 +210,17 @@ class AnalyzedCookie:
 
 @dataclass(frozen=True)
 class AnalyzedTrial:
-    """The analyzed products of one raw trial: analyzed requests, cookies, banner, platform."""
+    """The analyzed products of one raw trial: analyzed requests, cookies, banner, platform.
+
+    The crawl_start_utc instant is carried through so every row-level output stays self-auditable;
+    the essential-cookie 30-day cutoff is measured from this instant, not the crawl date.
+    """
 
     site_id: str
     url: str
     geolocation: str
     trial: int
+    crawl_start_utc: str
     blocked: bool
     analyzed_requests: tuple[AnalyzedRequest, ...]
     analyzed_cookies: tuple[AnalyzedCookie, ...]
@@ -210,7 +246,7 @@ class AnalyzedTrial:
         Args:
             raw_trial: The raw trial to analyze.
             cookie_db: The cookie database used to classify cookie names.
-            ep_matcher: The host-only EasyPrivacy matcher.
+            ep_matcher: An EasyPrivacyMatcher.
             radar: The DDG Tracker Radar index.
             banner_classifier: The multi-source banner classifier.
             platform_classifier: The hosting-platform classifier.
@@ -224,8 +260,9 @@ class AnalyzedTrial:
             AnalyzedRequest.from_raw(request, page_origin_domain, ep_matcher, radar)
             for request in raw_trial.requests
         )
+        now = datetime.fromisoformat(raw_trial.crawl_start_utc).timestamp()
         analyzed_cookies = tuple(
-            AnalyzedCookie.from_raw(cookie, cookie_db, page_origin_domain)
+            AnalyzedCookie.from_raw(cookie, cookie_db, page_origin_domain, now)
             for cookie in raw_trial.cookies
         )
         third_party_hosts = [
@@ -243,6 +280,7 @@ class AnalyzedTrial:
             url=raw_trial.url,
             geolocation=raw_trial.geolocation,
             trial=raw_trial.trial,
+            crawl_start_utc=raw_trial.crawl_start_utc,
             blocked=raw_trial.blocked,
             analyzed_requests=analyzed_requests,
             analyzed_cookies=analyzed_cookies,

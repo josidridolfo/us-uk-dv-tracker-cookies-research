@@ -21,5 +21,18 @@ and `IPROYAL_PASSWORD`. The entry points (`dv-crawl`, `dv-validate-vpn`) load
 this file automatically, so no manual `source` step is needed. An already
 exported environment variable overrides the file value.
 
+## Cookie essentiality
+
+A cookie is treated as essential when it is both strictly necessary and
+short-lived. Strict necessity is taken from the category assigned by the pinned
+Open Cookie Database. Short-lived means the cookie is either a session cookie or
+has an observed expiry within 30 days of the crawl instant. The observed
+lifetime is used -- the `expires_unix` value captured during the crawl, or the
+session flag -- not any declared retention period. Everything else is
+non-essential: analytics and marketing cookies, cookies whose name is not
+matched by the database, and strictly-necessary cookies whose observed lifetime
+runs beyond the window. The reference instant is the crawl start recorded per
+trial, so the classification is stable across re-analysis.
+
 ## Sites & Results
 Available upon request to verified researchers. Message me or email me with the subject [UK-US DV Data Request]: josid@ridol.fo

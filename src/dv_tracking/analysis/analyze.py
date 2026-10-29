@@ -1,7 +1,7 @@
 """
 The dv-analyze entrypoint: classify two explicit runs into per-site findings and write the parquet outputs and the LaTeX summary table.
 
-Each run is a (crawl-date, geolocation) pair selected with --run. For each run the raw trials of exactly that one cell directory are loaded, the classifiers built from the pinned tracker-list snapshots derive one SitePrivacyFindings per trial, the per-site rows collapse to one row per site at the longest dwell, and the two runs are compared in one aggregate-only summary. Art 9 transmission rates use the count of Art-9-implicated sites as the denominator, not all sites.
+Each run is a (crawl-date, geolocation) pair selected with --run. For each run the raw trials of exactly that one cell directory are loaded, the classifiers built from the pinned tracker-list snapshots derive one SitePrivacyFindings per trial, the per-site rows collapse to one row per site at the longest dwell, and the two runs are compared in one aggregate-only summary. Art 9 exfil rates use the count of Art-9-implicated sites as the denominator, not all sites.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 from pathlib import Path
 
 from dv_tracking import PROJECT_ROOT
+from dv_tracking.analysis.matcher_comparison import DEFAULT_BASELINE_DIR, MatcherComparison
 from dv_tracking.analysis.models import SitePrivacyFindings
 from dv_tracking.analysis.parquet_store import FindingsParquetStore
 from dv_tracking.analysis.summary import JurisdictionSummary, SummaryRun
@@ -112,10 +113,23 @@ def main(argv: list[str] | None = None) -> int:
             run_findings.append(SitePrivacyFindings.from_trial(analyzed, site, crawl_date=crawl_date))
         site_path = findings_store.save_site_findings(run_findings, crawl_date, geolocation)
         cookie_path = findings_store.save_cookie_findings(run_trials, crawl_date, geolocation)
+        request_path = findings_store.save_request_findings(run_trials, crawl_date, geolocation)
         exfil_path = findings_store.save_exfiltration_edges(run_trials, crawl_date, geolocation)
         print(f"wrote {site_path}")
         print(f"wrote {cookie_path}")
+        print(f"wrote {request_path}")
         print(f"wrote {exfil_path}")
+        baseline_path = DEFAULT_BASELINE_DIR / f"per_request_findings_{crawl_date}_{geolocation}.parquet"
+        if baseline_path.is_file():
+            comparison = MatcherComparison.from_parquet(
+                geolocation, crawl_date, processed_dir=arguments.output_dir
+            )
+            print(f"host-only vs faithful EasyPrivacy comparison ({crawl_date} {geolocation}):")
+            print(comparison.render())
+            comparison_path = comparison.write_parquet(
+                arguments.output_dir / f"matcher_comparison_{crawl_date}_{geolocation}.parquet"
+            )
+            print(f"wrote {comparison_path}")
         summary_runs.append(SummaryRun(run_findings, crawl_date, geolocation))
 
     summary = JurisdictionSummary.from_runs(summary_runs[0], summary_runs[1])
@@ -127,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         arguments.output_dir / f"jurisdiction_summary_{date_a}_{geo_a}__{date_b}_{geo_b}.tex"
     )
     print(f"wrote {tex_path}")
+    parquet_path = summary.write_parquet(
+        arguments.output_dir / f"jurisdiction_summary_{date_a}_{geo_a}__{date_b}_{geo_b}.parquet"
+    )
+    print(f"wrote {parquet_path}")
     return 0
 
 
