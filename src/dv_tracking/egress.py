@@ -94,6 +94,10 @@ class ObservedExit:
     country: str
     org: str
 
+    def __post_init__(self) -> None:
+        """Strip org at construction, so every route to an unusable org lands on "" alike."""
+        object.__setattr__(self, "org", self.org.strip())
+
     @property
     def geolocation(self) -> str | None:
         """The project geolocation mapped from the observed country, or None when unmapped."""
@@ -103,13 +107,21 @@ class ObservedExit:
     def is_residential(self) -> bool:
         """Whether the org reads as a residential ISP rather than a known datacenter.
 
-        An empty or missing org is treated as unknown, not residential: the
-        gate must fail closed on an exit it cannot classify.
+        An empty org (already stripped of whitespace by construction) is
+        treated as unknown, not residential: the gate must fail closed on
+        an exit it cannot classify.
         """
         if not self.org:
             return False
         lowered = self.org.lower()
         return not any(keyword in lowered for keyword in DATACENTER_KEYWORDS)
+
+    @property
+    def exit_class(self) -> str:
+        """The verdict label: residential, datacenter, or unclassifiable when org is empty."""
+        if self.is_residential:
+            return "residential"
+        return "unclassifiable" if not self.org else "datacenter"
 
 
 @dataclass(frozen=True)
@@ -272,10 +284,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     resolved = check.observed.geolocation or "an unmapped country"
-    exit_class = "residential" if check.observed.is_residential else "datacenter"
     print(
         f"FAIL: {arguments.geolocation} exit resolved to {check.observed.ip} "
-        f"({check.observed.country}, {resolved}, {exit_class})"
+        f"({check.observed.country}, {resolved}, {check.observed.exit_class})"
     )
     print("Do NOT run the crawl.")
     return 1
