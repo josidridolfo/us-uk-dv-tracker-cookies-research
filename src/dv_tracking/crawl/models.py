@@ -63,32 +63,6 @@ class RawCookie:
         """
         return cls(**keep_known_fields(cls, mapping))
 
-    @classmethod
-    def from_playwright(cls, raw: dict) -> RawCookie:
-        """
-        Maps a Playwright cookie dict to a RawCookie, storing the value verbatim.
-
-        Args:
-            raw: One cookie dict as returned by BrowserContext.cookies().
-        Returns:
-            cookie: The raw cookie carrying its value.
-        """
-        expires = raw.get("expires", -1.0)
-        if expires is None:
-            expires = -1.0
-        expires = float(expires)
-        return cls(
-            name=raw.get("name", ""),
-            domain=(raw.get("domain") or "").lstrip("."),
-            path=raw.get("path", "/"),
-            expires_unix=expires,
-            is_session=expires < 0,
-            is_secure=bool(raw.get("secure", False)),
-            is_http_only=bool(raw.get("httpOnly", False)),
-            same_site=str(raw.get("sameSite") or "Unspecified"),
-            value=raw.get("value", ""),
-        )
-
 
 @dataclass(frozen=True)
 class TCFProbeResult:

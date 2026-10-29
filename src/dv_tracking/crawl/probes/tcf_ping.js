@@ -1,5 +1,5 @@
 // Probe: IAB TCF v2 ping.
-// Called:  page.evaluate(source)
+// Invoked with: no arguments
 // Returns: the PingReturn dict when __tcfapi is registered; null otherwise.
 // Side effects: none (ping is side-effect-free per the IAB TCF v2 spec). 1500 ms timeout guard.
 

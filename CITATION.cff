@@ -24,7 +24,7 @@ abstract: >-
   A small-scale comparison of pre-consent third-party tracking on
   domestic violence support websites in the United Kingdom and the
   United States. Methodology: ~50 UK and ~50 US sites; aggregate
-  descriptive comparison by jurisdiction; three trials per cell; headful
-  Chromium via Playwright; residential-IP VPN exits; tracker
-  classification against pinned snapshots of DuckDuckGo Tracker Radar
-  and EasyPrivacy.
+  descriptive comparison by jurisdiction; repeated per-site visits under
+  OpenWPM-instrumented, pinned, unbranded Firefox; a residential-exit
+  HTTP relay; tracker classification against pinned snapshots of
+  DuckDuckGo Tracker Radar and EasyPrivacy.

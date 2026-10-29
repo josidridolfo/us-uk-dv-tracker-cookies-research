@@ -17,7 +17,13 @@ services:
     # gost 3.0.0, digest resolved 2026-10-29.
     image: gogost/gost@sha256:c8d77e87ee87eb6f1c225ca17d175b79ca11753166741c901a43d51f1279877d
     platform: linux/amd64
-    restart: unless-stopped
+    # Bounded, unlike unless-stopped: Docker restarts with the original env, so
+    # a relay missing a routing variable would loop its own guard forever. The
+    # count is per container lifetime, not a rolling window, so more than 3
+    # transient gost crashes over a long crawl takes the relay down for good --
+    # an availability trade against "survive flakiness", left at 3 since no
+    # live case exercises the boundary.
+    restart: on-failure:3
     environment:
       IPROYAL_HOST: ${IPROYAL_HOST:-geo.iproyal.com}
       IPROYAL_PORT: ${IPROYAL_PORT:-12321}
@@ -58,12 +64,12 @@ services:
       args:
         OPENWPM_BASE: ${OPENWPM_BASE:-dv-openwpm-base:v0.38.0}
     platform: linux/amd64
-    # Start order only: compose releases this service once the relay container
-    # starts, not once gost is listening. The pre-crawl exit gate fails closed
-    # on an unreachable relay, which is the guard that matters; a healthcheck
-    # belongs here once it can be tested against the real image.
-    depends_on:
-      - relay
+    # Deliberately no depends_on. The relay's country and session are per-run,
+    # so a `compose run` against this service would recreate the relay with an
+    # empty environment, its guard would refuse, and the restart loop would
+    # leave it with no DNS entry. The relay is started explicitly, and the
+    # pre-crawl exit gate fails closed on an unreachable one, which is the
+    # guard that matters.
     # Firefox crashes under load on the 64 MB default.
     shm_size: "2gb"
     environment:

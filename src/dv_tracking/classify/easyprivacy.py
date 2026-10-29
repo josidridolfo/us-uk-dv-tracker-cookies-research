@@ -57,10 +57,10 @@ class EasyPrivacyMatcher:
     @staticmethod
     def request_type_for_resource(resource_type: str, *, is_third_party: bool) -> str:
         """
-        Maps a Playwright resource type to the adblock-rust request_type string.
+        Maps a recorded resource type to the adblock-rust request_type string.
 
         Args:
-            resource_type: The Playwright resource-type name.
+            resource_type: The recorded resource-type name.
             is_third_party: Whether the request is third-party to the page origin.
         Returns:
             request_type: The adblock-rust request_type; framed documents map to
@@ -81,7 +81,7 @@ class EasyPrivacyMatcher:
 
         Args:
             url: The full request URL.
-            resource_type: The Playwright resource-type name.
+            resource_type: The recorded resource-type name.
             is_third_party: Whether the request is third-party to the page origin.
             source_domain: The registered domain of the visited page.
         Returns:
