@@ -1,0 +1,45 @@
+# Crawl output, derived artifacts, and local working material. The public tree
+# carries source and pinned lists only; raw captures are too large and carry
+# verbatim cookie values, and reporting is published as aggregates.
+data/
+tests/
+report/
+manual_validation/
+notebooks/
+scratch/
+tmp/
+.tmp/
+
+# Credentials. The residential-exit keys live in a repo-root .env; the example
+# carries key names only and is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+credentials.json
+*credentials*.json
+
+# Python build and cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
+*.swp
