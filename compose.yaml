@@ -18,7 +18,11 @@ services:
     image: gogost/gost@sha256:c8d77e87ee87eb6f1c225ca17d175b79ca11753166741c901a43d51f1279877d
     platform: linux/amd64
     # Bounded, unlike unless-stopped: Docker restarts with the original env, so
-    # a relay missing a routing variable would loop its own guard forever.
+    # a relay missing a routing variable would loop its own guard forever. The
+    # count is per container lifetime, not a rolling window, so more than 3
+    # transient gost crashes over a long crawl takes the relay down for good --
+    # an availability trade against "survive flakiness", left at 3 since no
+    # live case exercises the boundary.
     restart: on-failure:3
     environment:
       IPROYAL_HOST: ${IPROYAL_HOST:-geo.iproyal.com}

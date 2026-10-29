@@ -55,11 +55,12 @@ start_relay() {
         "${COMPOSE[@]}" up -d relay >/dev/null 2>&1
 }
 
-# A relay already running belongs to an operator's own work; recreating it
-# with this script's country/session would disrupt it, so this refuses
-# rather than hijacking it. Only what this script itself starts is torn down.
-if [ -n "$("${COMPOSE[@]}" ps --status running -q relay 2>/dev/null)" ]; then
-    echo "ERROR: the relay is already running; stop it first, this script manages its own lifecycle" >&2
+# A relay container in any state (running, restarting mid-backoff, or
+# stopped) belongs to an operator's own work; recreating it with this
+# script's country/session would disrupt it, so this refuses rather than
+# hijacking it. Only what this script itself starts is torn down.
+if [ -n "$("${COMPOSE[@]}" ps -a -q relay 2>/dev/null)" ]; then
+    echo "ERROR: a relay container already exists; remove it first, this script manages its own lifecycle" >&2
     exit 1
 fi
 
@@ -88,14 +89,23 @@ output="$(run_gate us)"; status=$?
 report "gb relay, us requested" 1 "${status}" 'FAIL: us exit resolved' "${output}"
 
 echo "case 3: relay bypass check -- the gate's exit must differ from the container's own"
+IPV4_PATTERN='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
 gate_ip="$(echo "${case1_output}" | grep -oE 'resolved to [0-9.]+' | awk '{print $3}')"
 direct_output="$("${COMPOSE[@]}" run --rm crawl python -c \
     "import urllib.request, json; print(json.load(urllib.request.urlopen('https://ipinfo.io/json'))['ip'])" 2>&1)"
 direct_ip="$(echo "${direct_output}" | tail -1)"
-if [ -z "${gate_ip}" ] || [ -z "${direct_ip}" ] || [ "${direct_ip}" = "${gate_ip}" ]; then
+# Each side's shape is checked before trusting an inequality between them:
+# a failed direct call's last line is a traceback fragment, which is
+# non-empty and trivially unequal to gate_ip without this check.
+if ! echo "${gate_ip}" | grep -qE "${IPV4_PATTERN}"; then
     fail_count=$((fail_count + 1))
-    printf 'FAIL  %-30s gate=%s direct=%s (relay bypassed or unreadable)\n' \
-        "relay bypass check" "${gate_ip:-<none>}" "${direct_ip:-<none>}"
+    printf 'FAIL  %-30s gate IP is not a dotted quad: %s\n' "relay bypass check" "${gate_ip:-<none>}"
+elif ! echo "${direct_ip}" | grep -qE "${IPV4_PATTERN}"; then
+    fail_count=$((fail_count + 1))
+    printf 'FAIL  %-30s direct IP is not a dotted quad: %s\n' "relay bypass check" "${direct_ip:-<none>}"
+elif [ "${direct_ip}" = "${gate_ip}" ]; then
+    fail_count=$((fail_count + 1))
+    printf 'FAIL  %-30s gate=%s direct=%s (relay bypassed)\n' "relay bypass check" "${gate_ip}" "${direct_ip}"
 else
     pass_count=$((pass_count + 1))
     printf 'PASS  %-30s gate=%s direct=%s\n' "relay bypass check" "${gate_ip}" "${direct_ip}"

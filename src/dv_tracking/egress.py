@@ -200,14 +200,13 @@ def _read_exit_through_relay(relay: RelayAddress) -> ObservedExit:
         try:
             with opener.open(IP_GEOLOCATION_ENDPOINT, timeout=LOOKUP_TIMEOUT_SECONDS) as response:
                 payload = json.loads(response.read().decode("utf-8"))
-            # Subscripted before .get(), so a non-dict payload (list, str, int,
-            # null) raises the caught TypeError here rather than at .get().
-            ip = payload["ip"]
-            country = payload["country"]
-            # Coerced to str so a non-string org (e.g. a stray JSON number)
-            # cannot reach ObservedExit.is_residential's .lower() uncaught.
+            # ip/country are coerced (neither can manufacture a pass); org
+            # is type-checked, not coerced, since str(anything-truthy) is
+            # truthy and would let an unclassifiable org read as residential.
+            ip = str(payload["ip"])
+            country = str(payload["country"])
             org = payload.get("org")
-            org = str(org) if org else ""
+            org = org if isinstance(org, str) else ""
             return ObservedExit(ip=ip, country=country, org=org)
         except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as cause:
             last_cause = cause
