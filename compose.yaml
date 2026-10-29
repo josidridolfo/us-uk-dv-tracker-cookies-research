@@ -58,12 +58,12 @@ services:
       args:
         OPENWPM_BASE: ${OPENWPM_BASE:-dv-openwpm-base:v0.38.0}
     platform: linux/amd64
-    # Start order only: compose releases this service once the relay container
-    # starts, not once gost is listening. The pre-crawl exit gate fails closed
-    # on an unreachable relay, which is the guard that matters; a healthcheck
-    # belongs here once it can be tested against the real image.
-    depends_on:
-      - relay
+    # Deliberately no depends_on. The relay's country and session are per-run,
+    # so a `compose run` against this service would recreate the relay with an
+    # empty environment, its guard would refuse, and the restart loop would
+    # leave it with no DNS entry. The relay is started explicitly, and the
+    # pre-crawl exit gate fails closed on an unreachable one, which is the
+    # guard that matters.
     # Firefox crashes under load on the 64 MB default.
     shm_size: "2gb"
     environment:

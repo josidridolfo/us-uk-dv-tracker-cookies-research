@@ -11,29 +11,26 @@ jurisdictions at an aggregate level.
 ## The relay and the exit gate
 
 The residential-exit credentials belong to a relay sidecar, not to this
-codebase: it terminates an unauthenticated listener and attaches the
-upstream username, password, and routing parameters itself, so no credential
-crosses into Python. Those credentials -- `IPROYAL_USERNAME`,
-`IPROYAL_PASSWORD`, `IPROYAL_COUNTRY`, `IPROYAL_SESSION` -- belong in the
-git-excluded `.env` at the repo root that the relay container reads; it
-refuses to start without them. The relay sidecar itself is not present in
-this tree yet.
-
-The pre-crawl exit gate (`dv-check-exit`) reads `DV_RELAY_HOST` and
-`DV_RELAY_PORT` from the same `.env` (or the exported environment, which
-wins) to find the relay's listener. Both are required with no default, so an
-unset relay address fails the gate closed rather than resolving to some other
-listener on the machine.
-
-Neither the relay sidecar nor a crawl entry point lives in this tree yet, so
-the raw write path (`RawStore`, a trial's `metadata.json` and its `exit_info`
-object) currently has no producer, mid-cutover from the removed Playwright
-crawler to an OpenWPM one.
+codebase: it terminates an unauthenticated listener and attaches the upstream
+username, password and routing parameters itself, so no credential crosses into
+Python. `IPROYAL_USERNAME` and `IPROYAL_PASSWORD` belong in the git-excluded
+`.env` at the repo root that the relay container reads.
 
 `IPROYAL_COUNTRY` and `IPROYAL_SESSION` are deliberately not kept in that file.
 Country follows the jurisdiction under crawl and the session token is generated
 per run, so both are supplied at invocation; `IPROYAL_LIFETIME` defaults to
 `10m`. The relay refuses to start if any of the four is absent.
+
+The pre-crawl exit gate (`dv-check-exit`) reads `DV_RELAY_HOST` and
+`DV_RELAY_PORT` to find that listener. Both are required with no default, so an
+unset relay address fails the gate closed rather than resolving to some other
+listener on the machine. The gate runs inside the crawl container, which is
+where the relay's listener resolves and where the browser's own egress will be
+observed.
+
+No crawl entry point lives in this tree yet, so the raw write path (`RawStore`,
+a trial's `metadata.json` and its `exit_info` object) currently has no
+producer, mid-cutover from the removed Playwright crawler to an OpenWPM one.
 
 ## Crawl container
 
