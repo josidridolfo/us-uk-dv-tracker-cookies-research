@@ -38,9 +38,9 @@ class RawStore:
 
         Args:
             trial: The raw trial to persist.
-            exit_info: VPN exit provenance recorded in the metadata; on a real
+            exit_info: Relay exit provenance recorded in the metadata; on a real
                 crawl the gate-verified exit facts (ip, country, org, residential,
-                via_proxy, checked_at_utc) plus an optional provider label.
+                checked_at_utc).
             crawl_date: The crawl date, used in the cell directory name.
         Returns:
             trial_dir: The directory the trial was written to.

@@ -8,18 +8,27 @@ visits each site with a fresh browser, records the network requests, cookies,
 and storage set before any consent interaction, and compares the two
 jurisdictions at an aggregate level.
 
-Each raw trial's `metadata.json` carries an `exit_info` object recording the
-pre-crawl gate's observed exit (`ip`, `country`, `org`, `residential`,
-`via_proxy`, `checked_at_utc`), constant across every trial in a run, with an
-optional supplementary `provider` label.
+## The relay and the exit gate
 
-## Credentials
+The residential-exit credentials belong to a relay sidecar, not to this
+codebase: it terminates an unauthenticated listener and attaches the
+upstream username, password, and routing parameters itself, so no credential
+crosses into Python. Those credentials -- `IPROYAL_USERNAME`,
+`IPROYAL_PASSWORD`, `IPROYAL_COUNTRY`, `IPROYAL_SESSION` -- belong in the
+git-excluded `.env` at the repo root that the relay container reads; it
+refuses to start without them. The relay sidecar itself is not present in
+this tree yet.
 
-The IPRoyal residential-exit credentials live in a git-excluded `.env` at the
-repo root, holding the keys `IPROYAL_HOST`, `IPROYAL_PORT`, `IPROYAL_USERNAME`,
-and `IPROYAL_PASSWORD`. The entry points (`dv-crawl`, `dv-validate-vpn`) load
-this file automatically, so no manual `source` step is needed. An already
-exported environment variable overrides the file value.
+The pre-crawl exit gate (`dv-check-exit`) reads `DV_RELAY_HOST` and
+`DV_RELAY_PORT` from the same `.env` (or the exported environment, which
+wins) to find the relay's listener. Both are required with no default, so an
+unset relay address fails the gate closed rather than resolving to some other
+listener on the machine.
+
+Neither the relay sidecar nor a crawl entry point lives in this tree yet, so
+the raw write path (`RawStore`, a trial's `metadata.json` and its `exit_info`
+object) currently has no producer, mid-cutover from the removed Playwright
+crawler to an OpenWPM one.
 
 ## Cookie essentiality
 

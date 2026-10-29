@@ -27,7 +27,6 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "playwright>=1.40",
     "duckdb>=0.10",
     "tldextract>=5.0",
     "polars>=0.20",
@@ -35,8 +34,7 @@ dependencies = [
 ]
 
 [project.scripts]
-dv-crawl = "dv_tracking.crawl.run:main"
-dv-validate-vpn = "dv_tracking.vpn:main"
+dv-check-exit = "dv_tracking.egress:main"
 dv-analyze = "dv_tracking.analysis.analyze:main"
 
 [project.optional-dependencies]
