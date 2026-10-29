@@ -57,3 +57,28 @@ DATACENTER_KEYWORDS: tuple[str, ...] = (
     "quadranet",
     "colocrossing",
 )
+
+
+@dataclass(frozen=True)
+class Condition:
+    """One consent-arm condition: its dwell schedule and whether it clicks a control."""
+
+    name: str
+    pre_dwell_s: float
+    post_dwell_s: float
+    clicks: bool
+
+
+# Dwell is provisional until the calibration pass sets it from measured banner
+# latency; 10s pre and 15s post is the working split pending that pass.
+NO_INTERACTION: Condition = Condition(
+    name="no_interaction", pre_dwell_s=10.0, post_dwell_s=15.0, clicks=False
+)
+REJECT_ALL: Condition = Condition(
+    name="reject_all", pre_dwell_s=10.0, post_dwell_s=15.0, clicks=True
+)
+ACCEPT_ALL: Condition = Condition(
+    name="accept_all", pre_dwell_s=10.0, post_dwell_s=15.0, clicks=True
+)
+# All three arms, in their canonical (not yet counterbalanced) order.
+CONDITIONS: tuple[Condition, ...] = (NO_INTERACTION, REJECT_ALL, ACCEPT_ALL)
