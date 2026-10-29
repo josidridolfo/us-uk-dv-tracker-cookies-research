@@ -63,6 +63,11 @@ services:
       dockerfile: docker/Dockerfile
       args:
         OPENWPM_BASE: ${OPENWPM_BASE:-dv-openwpm-base:v0.38.0}
+        # No default: scripts/build-crawl-image.sh is the only sanctioned way
+        # to build this image, and it always exports this itself. A hash
+        # taken from a dirty tree would be false provenance, worse than a
+        # build that refuses for lacking one.
+        DV_REPO_COMMIT: ${DV_REPO_COMMIT}
     platform: linux/amd64
     # Deliberately no depends_on. The relay's country and session are per-run,
     # so a `compose run` against this service would recreate the relay with an
@@ -76,5 +81,9 @@ services:
       DV_RELAY_HOST: relay
       DV_RELAY_PORT: "8080"
       DV_DATA_ROOT: /data
+      # Must agree with the relay's own default below: the crawl asserts its
+      # exit-recheck cadence never exceeds this, so both sides reading the
+      # same host-exported override (or the same default) is load-bearing.
+      IPROYAL_LIFETIME: ${IPROYAL_LIFETIME:-10m}
     volumes:
       - ./data:/data

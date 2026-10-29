@@ -23,11 +23,17 @@ COPY src ./src
 ENV PYTHONPATH=/opt/OpenWPM:/opt/dv-tracking/src
 ENV PYTHONUNBUFFERED=1
 
+# Baked in rather than read with -e, so the manifest's repo_commit reflects
+# the exact tree the image was built from. scripts/build-crawl-image.sh is
+# the only sanctioned way to set this: it refuses on a dirty working tree.
+ARG DV_REPO_COMMIT
+ENV DV_REPO_COMMIT=${DV_REPO_COMMIT}
+
 # Crawl output lands on a mounted volume so captures outlive the container.
 ENV DV_DATA_ROOT=/data
 VOLUME ["/data"]
 
-# Until the OpenWPM entrypoint lands, the default command only proves the
-# environment imports. The fuller browser and egress checks are documented in
-# the README as explicit `docker compose run` invocations.
+# The real entrypoint is `python -m dv_tracking.crawl.openwpm_run <geo> ...`
+# (see README); it is not a console script because this image never pip-
+# installs the project. The default command is just an import smoke test.
 CMD ["python", "-c", "import openwpm, sys; print('openwpm import ok on', sys.version.split()[0])"]

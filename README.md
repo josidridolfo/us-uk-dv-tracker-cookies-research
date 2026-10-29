@@ -30,9 +30,56 @@ where the relay's listener resolves and where the browser's own egress will be
 observed; the project is not pip-installed into that image, so no console
 script exists there to run instead.
 
-No crawl entry point lives in this tree yet, so the raw write path (`RawStore`,
-a trial's `metadata.json` and its `exit_info` object) currently has no
-producer, mid-cutover from the removed Playwright crawler to an OpenWPM one.
+The old raw write path (`RawStore`, a trial's `metadata.json` and its
+`exit_info` object) has no producer any more; the OpenWPM crawl entrypoint
+below writes a different cell layout instead.
+
+## The crawl entrypoint
+
+Invoked inside the crawl container, not as a console script (the image never
+pip-installs the project, so no entry point would resolve):
+
+```bash
+python -m dv_tracking.crawl.openwpm_run uk --sites /data/corpus/uk_selected_250.csv
+```
+
+**This currently refuses to crawl.** Firefox's proxy prefs are not pinned
+until the next PR, so before building any `CommandSequence` the runner
+asserts `BrowserParams.prefs` already pins a manual proxy at the verified
+relay's host and port, and exits 3 if it does not. That assertion proves
+configuration, not behaviour: prefs are reapplied on every browser relaunch,
+so it means something continuously once pinned, but WebRTC and DNS-over-HTTPS
+bypass `network.proxy.*` entirely, and nothing today reads the exit IP from
+inside a page load the way the gate itself does from outside. Proving the
+browser's own traffic took this path is a later PR.
+
+One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
+
+- `crawl-data.sqlite` -- OpenWPM's own primary artifact and the resume ledger.
+- `manifest.json` -- written once per cell (`ordering_seed`, `instrument`,
+  `schema_version`); reopened only if a run refuses, to record `refused` and
+  `refusal_reason` without losing the seed.
+- `runs.jsonl` -- one line per invocation: the repo commit, image and Firefox
+  versions, the active conditions and their dwells, the sites file and its
+  hash, and other facts that can legitimately differ between a cell's
+  invocations.
+- `exit-checks.jsonl` -- one line per exit-gate check taken, pass or fail.
+- `visits.jsonl` -- one line per attempted visit, mapping OpenWPM's `visit_id`
+  to `(site_id, condition, replicate)`. Written *before* the page load, not
+  after: a failed get would otherwise leave no identity for that visit_id, and
+  resume would re-crawl it on every future invocation forever.
+- `boundaries.jsonl` -- one line per visit recording the synthetic
+  phase-boundary instant the `no_interaction` arm logs in place of a click.
+
+Resume reconciles `crawl_history` (which outcome) against `visits.jsonl`
+(which site) on every invocation; nothing else is kept as a ledger. A visit
+with *any* terminal outcome -- completed, timed out, or errored -- counts as
+done and is not retried; a recorded failure is a result, not grounds for a
+silent retry. A kill between the identity stamp and the finalize command
+leaves one `visit_id` stamped with no outcome and a second `visit_id` for the
+same `(site, condition, replicate)` once it is re-crawled; the second one,
+the one with a terminal `crawl_history` row, is authoritative, and the first
+is an orphaned, harmless row in `visits.jsonl`.
 
 ## Crawl container
 
@@ -46,8 +93,8 @@ Two build steps, because upstream's Dockerfile takes its own source tree as the
 build context:
 
 ```bash
-./scripts/fetch-openwpm.sh   # pinned clone -> dv-openwpm-base
-docker compose build
+./scripts/fetch-openwpm.sh      # pinned clone -> dv-openwpm-base
+./scripts/build-crawl-image.sh  # refuses on a dirty tree, then builds the crawl image
 ```
 
 Both commands run from the repo root. `compose.yaml` lives there rather than

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dv_tracking import PROJECT_ROOT
+from dv_tracking.constants import GEOLOCATIONS
 
 REQUIRED_COLUMNS: tuple[str, ...] = (
     "site_id",
@@ -68,6 +69,14 @@ class DVSupportSite:
                 raise ValueError(
                     f"data row {data_row_number}: empty value for required field {column!r}"
                 )
+        # A country that fails to map to a known geolocation (e.g. "GB"
+        # rather than "uk") would otherwise match no filter silently rather
+        # than being caught at the boundary.
+        if record["country"].lower() not in GEOLOCATIONS:
+            raise ValueError(
+                f"data row {data_row_number}: country {record['country']!r} is not one of "
+                f"{GEOLOCATIONS}"
+            )
         return DVSupportSite(
             site_id=record["site_id"],
             org_name=record["org_name"],
