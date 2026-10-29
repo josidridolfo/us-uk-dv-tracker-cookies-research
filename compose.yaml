@@ -1,0 +1,74 @@
+name: dv-crawl
+
+# Two services: the residential-exit relay and the crawl container.
+#
+# Firefox cannot authenticate to an upstream proxy without a prompt, so the
+# relay terminates an unauthenticated listener on the compose network and
+# forwards upstream with the IPRoyal credentials attached. The browser only
+# ever sees relay:8080.
+#
+# This file sits at the repo root deliberately. Compose takes its project
+# directory from the first compose file's location and discovers .env there, so
+# a copy under docker/ would look for credentials in the wrong directory and
+# abort every command before doing any work.
+
+services:
+  relay:
+    # gost 3.0.0, digest resolved 2026-10-29.
+    image: gogost/gost@sha256:c8d77e87ee87eb6f1c225ca17d175b79ca11753166741c901a43d51f1279877d
+    platform: linux/amd64
+    restart: unless-stopped
+    environment:
+      IPROYAL_HOST: ${IPROYAL_HOST:-geo.iproyal.com}
+      IPROYAL_PORT: ${IPROYAL_PORT:-12321}
+      IPROYAL_USERNAME: ${IPROYAL_USERNAME:-}
+      IPROYAL_PASSWORD: ${IPROYAL_PASSWORD:-}
+      # Routing parameters IPRoyal reads off the password field. Country and
+      # session are per-run rather than credentials: country follows the
+      # jurisdiction and the session token is generated fresh per crawl.
+      IPROYAL_COUNTRY: ${IPROYAL_COUNTRY:-}
+      IPROYAL_SESSION: ${IPROYAL_SESSION:-}
+      IPROYAL_LIFETIME: ${IPROYAL_LIFETIME:-10m}
+    # $$ defers expansion to the container shell, so the credentials stay out
+    # of this file and out of the container's Config.Cmd. They remain visible
+    # in Config.Env like any env-injected secret, and gost takes its upstream
+    # as a CLI argument, so the expanded password is readable in ps and
+    # /proc/<pid>/cmdline on the crawl host. That is inherent to gost.
+    # Required values are checked here rather than through ${VAR:?} above,
+    # because compose interpolates the whole file at parse time: a required
+    # var on this service would abort `docker compose build` for the crawl
+    # image too. Checking in the container fails just as closed, but only
+    # when the relay is actually started.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        : "$${IPROYAL_USERNAME:?residential exit username is required}";
+        : "$${IPROYAL_PASSWORD:?residential exit password is required}";
+        : "$${IPROYAL_COUNTRY:?target country code, gb or us}";
+        : "$${IPROYAL_SESSION:?sticky session token}";
+        exec gost -L "http://:8080"
+        -F "http://$$IPROYAL_USERNAME:$${IPROYAL_PASSWORD}_country-$${IPROYAL_COUNTRY}_session-$${IPROYAL_SESSION}_lifetime-$${IPROYAL_LIFETIME}@$$IPROYAL_HOST:$$IPROYAL_PORT"
+    expose:
+      - "8080"
+
+  crawl:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        OPENWPM_BASE: ${OPENWPM_BASE:-dv-openwpm-base:v0.38.0}
+    platform: linux/amd64
+    # Start order only: compose releases this service once the relay container
+    # starts, not once gost is listening. The pre-crawl exit gate fails closed
+    # on an unreachable relay, which is the guard that matters; a healthcheck
+    # belongs here once it can be tested against the real image.
+    depends_on:
+      - relay
+    # Firefox crashes under load on the 64 MB default.
+    shm_size: "2gb"
+    environment:
+      DV_RELAY_HOST: relay
+      DV_RELAY_PORT: "8080"
+      DV_DATA_ROOT: /data
+    volumes:
+      - ./data:/data
