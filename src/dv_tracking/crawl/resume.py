@@ -86,7 +86,7 @@ def build_work_list(
     return work_list
 
 
-def _visit_identities(visits_jsonl_path: Path) -> dict[int, VisitIdentity]:
+def read_visit_identities(visits_jsonl_path: Path) -> dict[int, VisitIdentity]:
     """
     Map visit_id to (site_id, condition, replicate) from the sidecar manifest.
 
@@ -123,7 +123,7 @@ def attempt_counts(visits_jsonl_path: Path) -> dict[VisitIdentity, int]:
         counts: (site_id, condition, replicate) -> number of prior attempts.
     """
     counts: dict[VisitIdentity, int] = {}
-    for key in _visit_identities(visits_jsonl_path).values():
+    for key in read_visit_identities(visits_jsonl_path).values():
         counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -235,7 +235,7 @@ def done_work_items(
             retry -- mapped to that outcome so a caller can act on more than
             membership.
     """
-    identities = _visit_identities(visits_jsonl_path)
+    identities = read_visit_identities(visits_jsonl_path)
     outcomes = _terminal_outcomes(db_path, finalize_command_name)
     done: dict[VisitIdentity, VisitOutcome] = {}
     for visit_id, outcome in outcomes.items():

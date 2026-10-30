@@ -118,6 +118,9 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   1.5 seconds between the pre-dwell ending and this boundary running, site-
   dependently, so the matched-offset comparison the design calls for needs
   this recorded rather than assumed fixed.
+- `block-verdicts.jsonl` and `exclusion-report.json` -- written by the
+  blocked-visit detection pass below, not by the crawl itself; absent until
+  that pass has run against the cell at least once.
 
 Resume reconciles `crawl_history` (which outcome) against `visits.jsonl`
 (which site) on every invocation; nothing else is kept as a ledger. A visit
@@ -174,6 +177,64 @@ scaling implies. Net, a full sweep under the default type set should land
 in the low single-digit gigabytes -- not a capacity concern for local
 disk, but worth watching as the content store actually fills, since
 dedup's effect cannot be sized precisely before that run.
+
+## Blocked-visit detection
+
+A site sometimes serves one exit a page and another a block: a WAF entry
+in this corpus returned 205 requests on one residential exit and a 403
+page with 22 on another, with nothing in the cookie count hinting at the
+difference. `python -m dv_tracking.crawl.detect_blocks <cell_dir>` classifies
+every visit in one cell against three routes, tried in that order:
+
+1. The main document's own response status -- any 4xx/5xx blocks, named by
+   the actual status (`status_403`, `status_503`, ...).
+2. A known WAF/CDN header or request host, read straight out of
+   `crawl-data.sqlite` (BitNinja's `admin.bitninja.io`, Cloudflare's
+   `cf-mitigated: challenge` header or `challenges.cloudflare.com`, Akamai's
+   `akamai-grn`, Imperva/Incapsula's `x-iinfo` or `*.incapsula.com`,
+   DataDome's `geo.captcha-delivery.com`).
+3. A title/body interstitial signature over the retained main-document HTML
+   (`dv_tracking.crawl.interstitial`), read from the content store -- the
+   only route that needs it, and the only one `signature_assessable` can be
+   false for. A cell crawled with content capture off (or a resource-type
+   set that excludes `main_frame`) still gets routes 1 and 2; route 3 reports
+   `not_assessable` rather than guessing.
+
+A site is usable only if every arm it attempted was served: one blocked arm
+makes the site's contribution to the consent-arm comparison unusable, not
+just that arm, so dropping only the blocked visit is wrong. The rule is a
+pure function over a set of visit verdicts and does not special-case the
+arm count, so it holds unchanged once `reject_all`/`accept_all` join
+`no_interaction`.
+
+This module imports `plyvel` (the content-store reader only) and therefore
+runs inside the crawl container, same as `openwpm_run.py`:
+
+```bash
+docker run --rm --platform linux/amd64 \
+    -v "$(pwd)/src:/opt/dv-tracking/src" -v "$(pwd)/data:/data" \
+    -e PYTHONPATH=/opt/OpenWPM:/opt/dv-tracking/src \
+    dv-crawl-crawl:latest python -m dv_tracking.crawl.detect_blocks \
+    /data/raw/<crawl_date>_<geolocation>/openwpm
+```
+
+It writes `block-verdicts.jsonl` (one row per visit, with every signal that
+fired and the first-party/total request counts as auxiliary evidence) and
+`exclusion-report.json` (per-arm and per-site counts by reason code, plus
+the excluded site list) into the cell directory, overwriting both in full
+on a re-run. Both are plain JSON; the analysis stage, which runs outside the
+container, reads them with no `plyvel` dependency.
+
+First-party request count is carried as evidence, never as a classifier
+input: on this corpus's own pilot pair, cookie counts moved only 18% on a
+genuine block (17 to 14) while first-party requests moved 99% (159 to 2), so
+request volume is diagnostic where cookie count is not -- but a genuinely
+light page is a legitimate outcome, not a block, so the count stays
+informational rather than decisive. reCAPTCHA presence alone is deliberately
+not a signal either: this corpus's sites routinely carry it on contact and
+self-referral forms, so the body-signature matcher requires anti-bot title
+wording alongside the widget before it counts a reCAPTCHA page as a
+challenge.
 
 ## Crawl container
 
