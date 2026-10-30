@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "duckdb>=0.10",
-    "tldextract>=5.0",
+    "tldextract>=5.3,<6",
     "polars>=0.20",
     "adblock==0.6.0",
 ]

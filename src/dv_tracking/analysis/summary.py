@@ -15,7 +15,7 @@ import polars as pl
 
 from dv_tracking.analysis.models import SitePrivacyFindings
 from dv_tracking.analysis.statistics import DistributionSummary, column_median, percent
-from dv_tracking.constants import TRACKER_LIST_SNAPSHOTS
+from dv_tracking.constants import PUBLIC_SUFFIX_SNAPSHOT, TRACKER_LIST_SNAPSHOTS
 from dv_tracking.latex import LatexTable
 
 SUMMARY_CAPTION: str = (
@@ -405,7 +405,8 @@ class JurisdictionSummary:
         The reproducibility provenance as LaTeX comment lines preceding the table.
 
         Records both run labels with their site and Art-9-implicated denominators,
-        the pinned tracker-list snapshot versions, and the per-trial collapse rule.
+        the pinned tracker-list snapshot versions, the pinned public-suffix snapshot
+        every party judgement rests on, and the per-trial collapse rule.
 
         Args:
             None
@@ -423,6 +424,11 @@ class JurisdictionSummary:
             lines.append(
                 f"% tracker list {snapshot.name}: snapshot {snapshot.snapshot_date}, commit {commit}"
             )
+        lines.append(
+            f"% public suffix list: version {PUBLIC_SUFFIX_SNAPSHOT.list_version}, "
+            f"commit {PUBLIC_SUFFIX_SNAPSHOT.pinned_commit}, "
+            f"private domains {PUBLIC_SUFFIX_SNAPSHOT.include_private_domains}"
+        )
         lines.append(
             "% per-trial rows collapse to one row per site at the highest non-blocked trial "
             "(longest dwell); booleans any-True, blocked all-True, blocked dropped before rates"

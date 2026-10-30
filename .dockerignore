@@ -18,6 +18,7 @@ scripts/
 tracker_lists/ddg_tracker_radar/
 tracker_lists/easyprivacy/
 tracker_lists/open_cookie_database/
+tracker_lists/public_suffix_list/
 .venv/
 venv/
 __pycache__/

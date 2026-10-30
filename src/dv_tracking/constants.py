@@ -35,6 +35,29 @@ TRACKER_LIST_SNAPSHOTS: tuple[TrackerListSnapshot, ...] = (
     TrackerListSnapshot("DuckDuckGo autoconsent", "2026-10-30", "v17.1.0"),
 )
 
+
+@dataclass(frozen=True)
+class PublicSuffixSnapshot:
+    """The pinned public-suffix snapshot the analysis stage resolves registered domains under."""
+
+    path: Path
+    list_version: str
+    pinned_commit: str
+    sha256: str
+    include_private_domains: bool
+
+
+# The vendored Mozilla Public Suffix List snapshot, checked by
+# dv_tracking.analysis.party before it resolves anything. Analysis-stage only:
+# the crawl container has no tldextract and never reads this.
+PUBLIC_SUFFIX_SNAPSHOT: PublicSuffixSnapshot = PublicSuffixSnapshot(
+    path=TRACKER_LISTS_DIR / "public_suffix_list" / "public_suffix_list.dat",
+    list_version="2026-10-28_13-15-55_UTC",
+    pinned_commit="9dfbe81931367b3f0af21035c36ae7eeb830dd88",
+    sha256="1f96bae40adfc22ca2474d7c0099bbcfcb25aefd3e2547b5c2147c0dd2e3ebd9",
+    include_private_domains=False,
+)
+
 # UK's ISO 3166-1 alpha-2 code is GB; the project label for that cell is "uk".
 COUNTRY_CODE_TO_GEOLOCATION: dict[str, str] = {"GB": "uk", "US": "us"}
 # The ISO 3166-1 alpha-2 country each project geolocation must resolve to.

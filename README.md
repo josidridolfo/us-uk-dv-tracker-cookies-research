@@ -361,6 +361,97 @@ refuses to run against one already started for other work. The pre-crawl gate
 enforces that the exit reads residential and in-country before any site is
 visited.
 
+## Third-party determination
+
+Every exposure figure in this study rests on one decision: whether a request
+went to a third party. `dv_tracking.analysis.party` is where the OpenWPM
+analysis stage makes it. The Playwright-era `dv_tracking.classify` pipeline,
+which is what `dv-analyze` still runs, resolves domains through
+`dv_tracking.utils` against whichever public suffix list the installed
+`tldextract` bundles; migrating it onto the pinned list is the next step, and
+until then the tree carries two party rules and only one of them is pinned.
+
+OpenWPM no longer makes the decision at all.
+`http_requests.is_third_party_channel` and `is_third_party_to_top_window` are
+NULL on every captured row, because the upstream computation is commented out in
+the extension's `http-instrument.ts`: it used the XPCOM `mozIThirdPartyUtil`
+service a WebExtension cannot reach. `req_call_stack` is empty for the same era
+of reasons. What is populated on 100% of rows is `url`, `top_level_url`,
+`loading_origin`, `loading_href`, `triggering_origin`, `frame_id`,
+`parent_frame_id`, `frame_ancestors` and `resource_type`, which is enough to
+reconstruct both notions upstream once had:
+
+- **`party_to_top_level_site`**: the request's registered domain differs from
+  `top_level_url`'s. This is the notion a headline claim about visitor exposure
+  uses, being how many distinct companies a visitor to this site meets.
+- **`party_to_loading_document`**: the request's registered domain differs from
+  `loading_origin`'s. This diverges from the first inside a nested frame, and
+  13.7% of requests in the first real cell load inside one, so it is not an edge
+  case for a study of consent platforms that render in iframes. It can also
+  include the site's own domain, where the site's own endpoint is called from
+  inside a third party's frame, which is why it is the wrong notion for a
+  visitor-exposure claim.
+
+Registered domains come from the vendored public-suffix snapshot pinned in
+`constants.PUBLIC_SUFFIX_SNAPSHOT`, whose digest and self-declared version and
+commit header are both verified before the first resolution. `tldextract`
+otherwise fetches a live list and caches it, which would make a result depend on
+the day the analysis ran. Only the list's ICANN section counts as registrable,
+so a tracker reached at `bucket.s3.amazonaws.com` counts against
+`amazonaws.com`: one vendor spread across many subdomains of a hosting suffix is
+one party, not many. The earlier ad-hoc rule took the last two labels of the
+hostname, which reads `womensaid.org.uk` as `org.uk` and so called every
+`.org.uk` third party on a `.org.uk` site first-party; on a 250-site UK corpus
+that is not a hypothetical.
+
+A host resolves to one of five kinds. A registered domain, an IP literal (its
+canonical compressed form, counted as a party in its own right), or a
+suffix-less host such as `localhost` (its whole hostname) are all comparable. A
+non-network URL (`data:`, `blob:`, `about:`, `moz-extension:`, `javascript:`) is
+not treated as a party, and an absent value, a missing netloc or OpenWPM's
+`"undefined"` and `"null"` strings are unresolvable. Neither kind takes part in
+a comparison, so a request whose reference document cannot be resolved reads
+`undetermined` rather than defaulting to third-party, and the per-site count of
+such requests is reported alongside the counts as their data-quality
+denominator. `blob:` and `filesystem:` do inherit their creator's origin, so
+excluding them is the conservative reading rather than a claim about the
+schemes.
+
+That exclusion is why a top-level navigation, whose `loading_origin` OpenWPM
+writes as `"undefined"`, is first-party to the site and undetermined to its
+loading document, instead of contributing the site's own domain to the
+third-party count. Case, ports, userinfo, a trailing root dot and the leading
+dot of a domain cookie are normalised away, and internationalised hosts resolve
+to punycode, so `javascript_cookies.host` values resolve through the same rule
+as request URLs and cookie party-ness agrees with request party-ness by
+construction. The punycode step runs through the stdlib IDNA2003 codec, which
+disagrees with the browser's UTS#46 mapping on a narrow class of hosts (sharp s,
+final sigma); Firefox serialises hosts to A-labels before the extension observes
+them, so a captured host arrives already normalised and the divergence is not
+reachable from crawl data.
+
+Aggregation is two separately named operations returning two different types,
+because conflating them has already produced two headline figures for the same
+data. Each carries the notion it was built under, so a number cannot be detached
+from its definition:
+
+- `per_site_distinct_counts` counts each site's distinct third parties and
+  reports the sum, mean and median of those counts, answering how many third
+  parties a site in this corpus carries. A domain on five sites counts five
+  times.
+- `corpus_domain_union` unions those sets, answering how many distinct companies
+  appear anywhere in the corpus. Always at most the per-site sum.
+
+On the first real UK cell (four sites, `uk-an` excluded for a WAF-blocked reject
+arm), `no_interaction` and `reject_all` each give a union of 21 third-party
+domains against a per-site sum of 26, and `accept_all` gives 32 against 50. The
+two notions give the same union on that cell. Two domains (`parastorage.com`,
+`wixapps.net`) are third-party to the site and first-party within their own
+frame, but both still reach the loading-document set through the frame documents
+the site's own page loaded, and no site called its own domain from inside a
+sub-frame, which is the only thing that would have made the loading-document
+union larger.
+
 ## Cookie essentiality
 
 A cookie is treated as essential when it is both strictly necessary and

@@ -11,12 +11,15 @@ from pathlib import Path
 
 import tldextract
 
+# Never fetches, but falls back to whichever snapshot the installed tldextract
+# bundles, so this list moves with a dependency bump. The pinned list lives in
+# dv_tracking.analysis.party, which the classify stage does not yet use.
 EXTRACT: tldextract.TLDExtract = tldextract.TLDExtract(suffix_list_urls=())
 
 
 def registered_domain_for_host(host: str) -> str:
     """
-    Registered domain of a host under the pinned public suffix list.
+    Registered domain of a host under tldextract's bundled public suffix list.
 
     Args:
         host: The request host or cookie domain.
