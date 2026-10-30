@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Crawl image: the pinned OpenWPM base plus this project's source.
+# Crawl image: the pinned OpenWPM base plus this project's source and the
+# list data the crawl stage reads from disk.
 #
 # The base is built by scripts/fetch-openwpm.sh from a commit-verified upstream
 # clone. Source is placed on PYTHONPATH rather than pip-installed, which keeps
@@ -19,6 +20,15 @@ FROM ${OPENWPM_BASE}
 SHELL ["/bin/bash", "-c"]
 
 WORKDIR /opt/dv-tracking
+
+# tracker_lists/ before src/: the vendored lists change far less often than
+# application code, so this layer stays cached across most rebuilds.
+# .dockerignore strips the three directories the analysis stage owns
+# (ddg_tracker_radar, easyprivacy, open_cookie_database). What is left is
+# the crawl stage's own data: autoconsent's engine and rule set, which
+# AutoconsentInteractor opens at import time, plus the Consent-O-Matic and
+# CMP-vendor-host snapshots pinned under the same DV_REPO_COMMIT provenance.
+COPY tracker_lists ./tracker_lists
 COPY src ./src
 ENV PYTHONPATH=/opt/OpenWPM:/opt/dv-tracking/src
 ENV PYTHONUNBUFFERED=1
