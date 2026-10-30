@@ -13,8 +13,9 @@ or `dv_tracking.persistence` -- all three do, and all three fail here.
 
 Only `no_interaction` runs. `reject_all`/`accept_all` exist in
 `constants.CONDITIONS` so the counterbalancing and sequence shape already
-fit the consent command landing later; this module raises rather than
-guessing if it is ever asked to run a condition it has no command for.
+fit the consent command landing later; `_crawl_cell` refuses before opening
+a browser, rather than guessing, if it is ever asked to run a condition it
+has no command for.
 """
 
 from __future__ import annotations
@@ -24,8 +25,11 @@ import fcntl
 import hashlib
 import json
 import os
+import secrets
 import time
-from datetime import date
+import traceback
+from datetime import date, datetime
+from enum import IntEnum
 from pathlib import Path
 
 from openwpm.command_sequence import CommandSequence
@@ -37,20 +41,21 @@ from openwpm.storage.sql_provider import SQLiteStorageProvider
 from openwpm.task_manager import TaskManager
 from openwpm.utilities.platform_utils import get_version
 
-from dv_tracking.constants import GEOLOCATIONS, NO_INTERACTION, TRACKER_LIST_SNAPSHOTS
+from dv_tracking.constants import GEOLOCATIONS, NO_INTERACTION, TRACKER_LIST_SNAPSHOTS, Condition
 from dv_tracking.crawl.resume import (
     attempt_counts,
     build_work_list,
     done_work_items,
     load_or_create_manifest,
     read_base_provenance,
-    write_refusal,
+    write_manifest_atomically,
 )
 from dv_tracking.egress import (
     ExitCheck,
     ProxyConfigurationError,
     RelayAddress,
     check_exit,
+    load_env_file,
     utcnow_iso,
 )
 from dv_tracking.sites import DVSupportSite
@@ -60,6 +65,7 @@ SCHEMA_VERSION: str = "1"
 
 # Only no_interaction is active this PR; see the module docstring.
 ACTIVE_CONDITIONS = (NO_INTERACTION,)
+SUPPORTED_CONDITION_ACTIONS: frozenset[str] = frozenset({"none"})
 REPLICATE_COUNT: int = 1
 
 # xvfb, not headless: headless has no WebGL (a tracker signal and a bot
@@ -71,6 +77,12 @@ DISPLAY_MODE = "xvfb"
 NAVIGATION_TIMEOUT_S: int = 90
 DWELL_TIMEOUT_MARGIN_S: int = 10
 FINALIZE_COMMAND_NAME: str = FinalizeCommand.__name__
+# FinalizeCommand's own sleep, hardcoded at command_sequence.py:200 of the
+# pinned commit (`FinalizeCommand(sleep=5)`) rather than exposed as an
+# importable constant. The tab is already torn down by the time this sleep
+# starts, but storage keeps attributing records to this visit_id for its
+# duration -- see the module note on FINALIZE_DRAIN_TAIL_S's use below.
+FINALIZE_DRAIN_TAIL_S: float = 5.0
 
 # Bounds consecutive command failures before OpenWPM gives up on the whole
 # invocation. The default (2*num_browsers+10 = 12 here) is tuned for a 100k-
@@ -79,6 +91,49 @@ FINALIZE_COMMAND_NAME: str = FinalizeCommand.__name__
 FAILURE_LIMIT: int = 25
 
 DEFAULT_EXIT_RECHECK_SECONDS: int = 600
+# A recheck cadence equal to the relay session lifetime sits exactly on the
+# boundary the guard exists to police: a rotation landing just after a
+# check would go unobserved for a full session. The margin forces a real
+# gap, not just a non-negative one.
+EXIT_RECHECK_MARGIN_S: int = 30
+
+# Nothing upstream touches these (configure_firefox.privacy() only ever sets
+# network.cookie.cookieBehavior); they must be pinned through
+# BrowserParams.prefs directly or Firefox's own defaults govern them.
+PROTECTION_PREFS: dict[str, bool] = {
+    "privacy.trackingprotection.enabled": False,
+    "privacy.trackingprotection.cryptomining.enabled": False,
+    "privacy.trackingprotection.fingerprinting.enabled": False,
+}
+# configure_firefox.privacy() maps tp_cookies="always" to
+# network.cookie.cookieBehavior=0 (accept all, no partitioning): dFPI/Total
+# Cookie Protection never engages. This is BrowserParams' own default, so
+# nothing needs to set it, only confirm it has not drifted.
+PINNED_TP_COOKIES: str = "always"
+
+
+class ExitCode(IntEnum):
+    """Process exit codes `main` returns.
+
+    OK, NO_SITES_MATCHED, RELAY_OR_EXIT_GATE_FAILED,
+    PREFS_NOT_PINNED, FAILURE_BUDGET_EXCEEDED, CELL_LOCKED, and
+    EXIT_RECHECK_EXCEEDS_LIFETIME keep their historical values (0-6) from
+    before this type existed. UNSUPPORTED_CONDITION and UNEXPECTED_FAILURE
+    are new: the first is a refusal raised before any browser opens, and the
+    second is `main`'s catch-all, so an unanticipated fault gets its own
+    distinct, retryable code instead of colliding with NO_SITES_MATCHED on
+    a bare traceback's exit(1).
+    """
+
+    OK = 0
+    NO_SITES_MATCHED = 1
+    RELAY_OR_EXIT_GATE_FAILED = 2
+    PREFS_NOT_PINNED = 3
+    FAILURE_BUDGET_EXCEEDED = 4
+    CELL_LOCKED = 5
+    EXIT_RECHECK_EXCEEDS_LIFETIME = 6
+    UNSUPPORTED_CONDITION = 7
+    UNEXPECTED_FAILURE = 8
 
 
 class ExitVerificationError(Exception):
@@ -89,8 +144,16 @@ class ExitVerificationError(Exception):
         self.check = check
 
 
-class ProxyPrefsNotPinnedError(Exception):
+class PrefsNotPinnedError(Exception):
+    """Base for a refusal to crawl because a pinned browser configuration is missing."""
+
+
+class ProxyPrefsNotPinnedError(PrefsNotPinnedError):
     """Raised when BrowserParams.prefs does not pin a manual proxy at the verified relay."""
+
+
+class ProtectionPrefsNotPinnedError(PrefsNotPinnedError):
+    """Raised when a browser protection this study requires pinned off is not configured that way."""
 
 
 def _append_jsonl(path: Path, row: dict) -> None:
@@ -126,11 +189,58 @@ def _normalize_version(value: str | bytes) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else value
 
 
-def _exit_check_row(check: ExitCheck) -> dict:
-    """Project an ExitCheck to the row shape written to exit-checks.jsonl."""
+def _unsupported_condition_actions(conditions: tuple[Condition, ...]) -> list[str]:
+    """Return the distinct unsupported action names among the given conditions, sorted."""
+    return sorted({c.action for c in conditions} - SUPPORTED_CONDITION_ACTIONS)
+
+
+def _recheck_margin_is_sufficient(exit_recheck_seconds: int, iproyal_lifetime_s: int) -> bool:
+    """Report whether the recheck cadence leaves EXIT_RECHECK_MARGIN_S before a session could rotate unnoticed."""
+    return exit_recheck_seconds <= iproyal_lifetime_s - EXIT_RECHECK_MARGIN_S
+
+
+def _stamped_at_utc(visits_path: Path, visit_id: int) -> str | None:
+    """
+    Look up one visit_id's own stamped_at_utc from the sidecar identity log.
+
+    Scans from the end: the matching row is always the most recently
+    appended one, written immediately before the get this lookup follows.
+
+    Args:
+        visits_path: The sidecar visit-identity JSONL path.
+        visit_id: The visit_id to find.
+    Returns:
+        stamped_at_utc: The stamp instant, or None if no row matched.
+    """
+    if not visits_path.is_file():
+        return None
+    for line in reversed(visits_path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("visit_id") == visit_id:
+            return row.get("stamped_at_utc")
+    return None
+
+
+def _exit_check_row(check: ExitCheck, run_id: str) -> dict[str, object]:
+    """Project an ExitCheck to the full row shape written to exit-checks.jsonl.
+
+    The sole owner of that row shape: nothing downstream patches fields
+    onto `check.as_provenance()` afterward.
+    """
     return {
-        **check.as_provenance(),
+        "run_id": run_id,
         "expected_geolocation": check.expected_geolocation,
+        "ip": check.observed.ip,
+        "country": check.observed.country,
+        "org": check.observed.org,
+        "exit_class": check.observed.exit_class,
+        "checked_at_utc": check.checked_at_utc,
         "passed": check.passed,
     }
 
@@ -165,39 +275,51 @@ def verify_exit(geolocation: str, relay: RelayAddress) -> ExitCheck:
     return check
 
 
-def assert_proxy_prefs_pinned(prefs: dict, relay: RelayAddress) -> None:
+def assert_prefs_pinned(browser_params: BrowserParams, relay: RelayAddress) -> None:
     """
-    Assert prefs pin a manual proxy at the verified relay's host and port.
+    Assert the browser is configured so its own defaults cannot distort this study.
 
-    Proves configuration, not behaviour. deploy_firefox() reapplies prefs on
-    every relaunch, so this means something continuously rather than only at
-    crawl start -- but WebRTC and DNS-over-HTTPS bypass network.proxy.*
-    entirely, and OpenWPM's own optimize_prefs() touches neither. Only an
-    in-browser confirmation (reading the exit from inside a page load) can
-    prove the browser's traffic actually took this path; that is a later PR.
+    Proves configuration, not behaviour: WebRTC and DNS-over-HTTPS bypass
+    `network.proxy.*` entirely, and nothing today reads the exit IP from
+    inside a page load the way the gate itself does from outside. Proving
+    the browser's own traffic took this path is a later PR.
 
     Args:
-        prefs: One browser's BrowserParams.prefs.
+        browser_params: The browser's parameter object (prefs and tp_cookies).
         relay: The relay address the gate just verified.
     Raises:
-        ProxyPrefsNotPinnedError: When prefs do not match.
+        ProxyPrefsNotPinnedError: When prefs do not pin a manual proxy at the relay.
+        ProtectionPrefsNotPinnedError: When a browser protection that would
+            block or partition exactly what this study counts is not
+            pinned off.
     """
-    expected = {
+    prefs = browser_params.prefs
+    expected_proxy = {
         "network.proxy.type": 1,
         "network.proxy.http": relay.host,
         "network.proxy.http_port": relay.port,
         "network.proxy.ssl": relay.host,
         "network.proxy.ssl_port": relay.port,
     }
-    mismatches = {k: (prefs.get(k), v) for k, v in expected.items() if prefs.get(k) != v}
-    if mismatches:
+    proxy_mismatches = {k: (prefs.get(k), v) for k, v in expected_proxy.items() if prefs.get(k) != v}
+    if proxy_mismatches:
         raise ProxyPrefsNotPinnedError(
-            f"prefs do not pin a manual proxy at {relay.host}:{relay.port}: {mismatches}"
+            f"prefs do not pin a manual proxy at {relay.host}:{relay.port}: {proxy_mismatches}"
+        )
+
+    protection_mismatches = {
+        k: (prefs.get(k), v) for k, v in PROTECTION_PREFS.items() if prefs.get(k) != v
+    }
+    if browser_params.tp_cookies != PINNED_TP_COOKIES:
+        protection_mismatches["tp_cookies"] = (browser_params.tp_cookies, PINNED_TP_COOKIES)
+    if protection_mismatches:
+        raise ProtectionPrefsNotPinnedError(
+            f"browser protections are not pinned off for measurement: {protection_mismatches}"
         )
 
 
 class StampVisitCommand(BaseCommand):
-    """Appends the (site, condition, replicate) identity for this visit_id.
+    """Append the (site, condition, replicate) identity for this visit_id.
 
     Placed first in the sequence, before the get: BrowserManager breaks out
     of a sequence on any non-ok command and never reaches later ones, so a
@@ -207,19 +329,24 @@ class StampVisitCommand(BaseCommand):
 
     def __init__(
         self,
+        *,
         visits_path: Path,
         site_id: str,
         condition: str,
         replicate: int,
         arm_position: int,
-        exit_check_index: int,
+        work_list_position: int,
+        run_id: str,
+        checked_at_utc: str,
     ) -> None:
         self.visits_path = visits_path
         self.site_id = site_id
         self.condition = condition
         self.replicate = replicate
         self.arm_position = arm_position
-        self.exit_check_index = exit_check_index
+        self.work_list_position = work_list_position
+        self.run_id = run_id
+        self.checked_at_utc = checked_at_utc
 
     def __repr__(self) -> str:
         return f"StampVisitCommand({self.site_id}, {self.condition}, {self.replicate})"
@@ -234,36 +361,54 @@ class StampVisitCommand(BaseCommand):
                 "condition": self.condition,
                 "replicate": self.replicate,
                 "arm_position": self.arm_position,
-                "exit_check_index": self.exit_check_index,
+                "work_list_position": self.work_list_position,
+                "run_id": self.run_id,
+                "checked_at_utc": self.checked_at_utc,
                 "stamped_at_utc": utcnow_iso(),
             },
         )
 
 
 class BoundaryCommand(BaseCommand):
-    """Records the synthetic phase-boundary instant for an unclicked visit.
+    """Record the synthetic phase-boundary instant for an unclicked visit.
 
     The no_interaction arm clicks nothing, but the matched-offset comparison
     the plan requires needs a boundary instant at the same point in its
     sequence as a real click would occupy; nothing wrote it before this.
+    `GetCommand`'s own alert probe (up to 0.5s, plus a further 1s when a
+    modal is present) sits between the pre-dwell ending and this command
+    running, so the offset is recorded rather than assumed fixed.
     """
 
-    def __init__(self, boundaries_path: Path) -> None:
+    def __init__(self, *, boundaries_path: Path, visits_path: Path) -> None:
         self.boundaries_path = boundaries_path
+        self.visits_path = visits_path
 
     def __repr__(self) -> str:
         return "BoundaryCommand()"
 
     def execute(self, webdriver, browser_params, manager_params, extension_socket) -> None:
+        boundary_utc = utcnow_iso()
+        stamped_at = _stamped_at_utc(self.visits_path, self.visit_id)
+        offset_from_get_start_s = (
+            (datetime.fromisoformat(boundary_utc) - datetime.fromisoformat(stamped_at)).total_seconds()
+            if stamped_at is not None
+            else None
+        )
         _append_jsonl(
-            self.boundaries_path, {"visit_id": self.visit_id, "boundary_utc": utcnow_iso()}
+            self.boundaries_path,
+            {
+                "visit_id": self.visit_id,
+                "boundary_utc": boundary_utc,
+                "offset_from_get_start_s": offset_from_get_start_s,
+            },
         )
 
 
 class DwellCommand(BaseCommand):
-    """Sleeps without navigating, for the post-boundary dwell window."""
+    """Sleep without navigating, for the post-boundary dwell window."""
 
-    def __init__(self, seconds: float) -> None:
+    def __init__(self, *, seconds: float) -> None:
         self.seconds = seconds
 
     def __repr__(self) -> str:
@@ -292,14 +437,20 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--data-root", type=Path, default=Path(os.environ.get("DV_DATA_ROOT", "/data")))
     parser.add_argument(
         "--exit-recheck-seconds",
-        type=int,
-        default=int(os.environ.get("DV_EXIT_RECHECK_SECONDS", str(DEFAULT_EXIT_RECHECK_SECONDS))),
+        type=_parse_duration_seconds,
+        default=os.environ.get("DV_EXIT_RECHECK_SECONDS", str(DEFAULT_EXIT_RECHECK_SECONDS)),
+    )
+    # Same duration format as --exit-recheck-seconds, deliberately: the two
+    # are compared directly, and a bare-int side next to a "10m"-style side
+    # was the kind of mismatch that let them drift apart silently.
+    parser.add_argument(
+        "--iproyal-lifetime", type=_parse_duration_seconds, default=os.environ.get("IPROYAL_LIFETIME", "10m")
     )
     parser.add_argument("--purpose", choices=("calibration", "sweep"), default="sweep")
     return parser.parse_args(argv)
 
 
-def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> int:
+def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
     """Run one cell's crawl once the cell lock is held; see main() for the exit-code contract."""
     geolocation = arguments.geolocation
     db_path = cell_dir / "crawl-data.sqlite"
@@ -308,186 +459,252 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> int:
     boundaries_path = cell_dir / "boundaries.jsonl"
     exit_checks_path = cell_dir / "exit-checks.jsonl"
     runs_path = cell_dir / "runs.jsonl"
+    run_id = secrets.token_hex(8)
 
-    all_sites = DVSupportSite.load_all(arguments.sites)
-    sites = [s for s in all_sites if s.country.strip().lower() == geolocation]
-    print(f"[{geolocation}] {len(sites)} of {len(all_sites)} sites match the geolocation")
-    if not sites:
-        print(f"[{geolocation}] no matching sites; refusing rather than returning a silent 0")
-        return 1
-
-    manifest = load_or_create_manifest(manifest_path, geolocation, INSTRUMENT, SCHEMA_VERSION)
-    seed = manifest["ordering_seed"]
-
-    work_list = build_work_list(sites, seed, ACTIVE_CONDITIONS, REPLICATE_COUNT)
-    already_done = done_work_items(db_path, visits_path, FINALIZE_COMMAND_NAME)
-    remaining = [
-        item
-        for item in work_list
-        if (item.site.site_id, item.condition.name, item.replicate) not in already_done
-    ]
-    print(
-        f"[{geolocation}] {len(work_list)} total visits, {len(already_done)} already terminal, "
-        f"{len(remaining)} remaining"
-    )
-
-    openwpm_version, firefox_version = (_normalize_version(v) for v in get_version())
-    base_provenance = read_base_provenance(arguments.data_root / "openwpm-base-provenance.txt")
-    _append_jsonl(
-        runs_path,
-        {
-            "started_at_utc": utcnow_iso(),
-            "crawl_date": arguments.crawl_date,
-            "repo_commit": _required_env("DV_REPO_COMMIT"),
-            "openwpm_tag": base_provenance.get("openwpm_tag"),
-            "openwpm_commit": base_provenance.get("openwpm_commit"),
-            "openwpm_version_string": openwpm_version,
-            "base_image": base_provenance.get("image"),
-            "base_image_id": base_provenance.get("image_id"),
-            "firefox_version": firefox_version,
-            # PR 4 (firefox-prefs) has not landed: no pref set is pinned yet,
-            # so there is nothing to fingerprint. Absent rather than faked.
-            "pref_fingerprint": None,
-            "tracker_list_snapshots": [
-                {"name": s.name, "snapshot_date": s.snapshot_date, "pinned_commit": s.pinned_commit}
-                for s in TRACKER_LIST_SNAPSHOTS
-            ],
-            "display_mode": DISPLAY_MODE,
-            "conditions": [
-                {
-                    "name": c.name,
-                    "pre_dwell_s": c.pre_dwell_s,
-                    "post_dwell_s": c.post_dwell_s,
-                    "action": c.action,
-                }
-                for c in ACTIVE_CONDITIONS
-            ],
-            "replicate_count": REPLICATE_COUNT,
-            "navigation_timeout_s": NAVIGATION_TIMEOUT_S,
-            "exit_recheck_seconds": arguments.exit_recheck_seconds,
-            "failure_limit": FAILURE_LIMIT,
-            "sites_path": str(arguments.sites),
-            "sites_sha256": hashlib.sha256(arguments.sites.read_bytes()).hexdigest(),
-            "site_count": len(sites),
-            "purpose": arguments.purpose,
-        },
-    )
-
-    if not remaining:
-        return 0
-
-    iproyal_lifetime_s = _parse_duration_seconds(os.environ.get("IPROYAL_LIFETIME", "10m"))
-    if arguments.exit_recheck_seconds > iproyal_lifetime_s:
-        print(
-            f"ERROR: --exit-recheck-seconds ({arguments.exit_recheck_seconds}) exceeds "
-            f"IPROYAL_LIFETIME ({iproyal_lifetime_s}s); a rotation could pass unverified"
+    def _finish(exit_code: ExitCode, reason: str, remaining_count: int | None = None) -> ExitCode:
+        """Append this invocation's terminal runs.jsonl row and return its exit code."""
+        _append_jsonl(
+            runs_path,
+            {
+                "run_id": run_id,
+                "ended_at_utc": utcnow_iso(),
+                "exit_code": int(exit_code),
+                "reason": reason,
+                "remaining_count": remaining_count,
+            },
         )
-        return 6
+        return exit_code
 
-    try:
-        relay = RelayAddress.from_environ(os.environ)
-    except ProxyConfigurationError as error:
-        print(f"ERROR: {error}")
-        print("Do NOT run the crawl.")
-        return 2
+    def _run() -> ExitCode:
+        """Run the cell's crawl body; wrapped by _crawl_cell so any uncaught exception still ends with a terminal runs.jsonl row."""
 
-    try:
-        check = verify_exit(geolocation, relay)
-    except ExitVerificationError as error:
-        if error.check is not None:
-            _append_jsonl(exit_checks_path, _exit_check_row(error.check))
-        print(f"ERROR: {error}")
-        print("Do NOT run the crawl.")
-        return 2
-    _append_jsonl(exit_checks_path, _exit_check_row(check))
-    exit_check_index = 0
-    last_checked_at = time.monotonic()
+        all_sites = DVSupportSite.load_all(arguments.sites)
+        sites = [s for s in all_sites if s.country.strip().lower() == geolocation]
+        print(f"[{geolocation}] {len(sites)} of {len(all_sites)} sites match the geolocation")
+        if not sites:
+            print(f"[{geolocation}] no matching sites; refusing rather than returning a silent 0")
+            return _finish(ExitCode.NO_SITES_MATCHED, "no sites matched this geolocation")
 
-    browser_params = BrowserParams(display_mode=DISPLAY_MODE)
-    browser_params.http_instrument = True
-    browser_params.cookie_instrument = True
-    browser_params.navigation_instrument = True
-    browser_params.dns_instrument = True
+        # Validated before anything opens a browser: build_work_list interleaves
+        # conditions per site, so discovering an unsupported one mid-crawl would
+        # leave a partially populated cell and a runs.jsonl row claiming every
+        # active condition ran.
+        unsupported_actions = _unsupported_condition_actions(ACTIVE_CONDITIONS)
+        if unsupported_actions:
+            reason = f"unsupported condition action(s), no command exists yet: {unsupported_actions}"
+            print(f"[{geolocation}] ERROR: {reason}")
+            return _finish(ExitCode.UNSUPPORTED_CONDITION, reason)
 
-    try:
-        assert_proxy_prefs_pinned(browser_params.prefs, relay)
-    except ProxyPrefsNotPinnedError as error:
-        write_refusal(manifest_path, manifest, str(error), utcnow_iso())
-        print(f"ERROR: {error}")
-        print("Refusing to crawl: proxy prefs are not pinned to the verified relay.")
-        return 3
+        manifest = load_or_create_manifest(manifest_path, geolocation, INSTRUMENT, SCHEMA_VERSION)
+        seed = manifest.ordering_seed
 
-    manager_params = ManagerParams(num_browsers=1)
-    manager_params.data_directory = cell_dir
-    manager_params.log_path = cell_dir / "openwpm.log"
-    manager_params.failure_limit = FAILURE_LIMIT
+        work_list = build_work_list(sites, seed, ACTIVE_CONDITIONS, REPLICATE_COUNT)
+        already_done = done_work_items(db_path, visits_path, FINALIZE_COMMAND_NAME)
+        remaining = [
+            item
+            for item in work_list
+            if (item.site.site_id, item.condition.name, item.replicate) not in already_done
+        ]
+        print(
+            f"[{geolocation}] {len(work_list)} total visits, {len(already_done)} already terminal, "
+            f"{len(remaining)} remaining"
+        )
 
-    attempts = attempt_counts(visits_path)
-    try:
-        with TaskManager(
-            manager_params, [browser_params], SQLiteStorageProvider(db_path), None
-        ) as manager:
-            for item in remaining:
-                if time.monotonic() - last_checked_at >= arguments.exit_recheck_seconds:
-                    try:
-                        check = verify_exit(geolocation, relay)
-                    except ExitVerificationError as error:
-                        if error.check is not None:
-                            _append_jsonl(exit_checks_path, _exit_check_row(error.check))
-                        print(f"ERROR: {error}")
-                        print("Do NOT run the crawl. Aborting with visits remaining.")
-                        return 2
-                    _append_jsonl(exit_checks_path, _exit_check_row(check))
-                    exit_check_index += 1
-                    last_checked_at = time.monotonic()
+        # Cheapest deterministic checks first: resolving the relay address and
+        # asserting prefs needs no network I/O, unlike the exit gate below it,
+        # so a misconfiguration is caught before spending a metered proxy read.
+        try:
+            relay = RelayAddress.from_environ(os.environ)
+        except ProxyConfigurationError as error:
+            print(f"ERROR: {error}")
+            print("Do NOT run the crawl.")
+            return _finish(ExitCode.RELAY_OR_EXIT_GATE_FAILED, str(error), len(remaining))
 
-                key = (item.site.site_id, item.condition.name, item.replicate)
-                sequence = CommandSequence(
-                    item.site.url,
-                    reset=True,
-                    site_rank=item.position,
-                    retry_number=attempts.get(key, 0) + 1,
-                    callback=lambda ok, site_id=item.site.site_id: print(
-                        f"[{geolocation}] {site_id}: {'ok' if ok else 'failed'}"
-                    ),
-                )
-                sequence.append_command(
-                    StampVisitCommand(
-                        visits_path,
-                        item.site.site_id,
-                        item.condition.name,
-                        item.replicate,
-                        item.arm_position,
-                        exit_check_index,
+        browser_params = BrowserParams(display_mode=DISPLAY_MODE)
+        browser_params.http_instrument = True
+        browser_params.cookie_instrument = True
+        browser_params.navigation_instrument = True
+        # Inert rather than wrong: behind a manual HTTP proxy Firefox hands
+        # hostnames to the proxy instead of resolving them locally, so
+        # dns_responses would be near-empty while provenance implied DNS was
+        # measured.
+        browser_params.dns_instrument = False
+
+        try:
+            assert_prefs_pinned(browser_params, relay)
+        except PrefsNotPinnedError as error:
+            manifest = manifest.refused_with(str(error), utcnow_iso())
+            write_manifest_atomically(manifest_path, manifest)
+            print(f"ERROR: {error}")
+            print("Refusing to crawl: browser configuration is not pinned as required.")
+            return _finish(ExitCode.PREFS_NOT_PINNED, str(error), len(remaining))
+
+        # The gate just passed, so any refusal recorded by an earlier invocation
+        # no longer describes this cell.
+        if manifest.refused:
+            manifest = manifest.cleared_of_refusal()
+            write_manifest_atomically(manifest_path, manifest)
+
+        if not _recheck_margin_is_sufficient(arguments.exit_recheck_seconds, arguments.iproyal_lifetime):
+            reason = (
+                f"--exit-recheck-seconds ({arguments.exit_recheck_seconds}) leaves less than "
+                f"{EXIT_RECHECK_MARGIN_S}s of margin before --iproyal-lifetime "
+                f"({arguments.iproyal_lifetime}s); a rotation could pass unverified. This value is "
+                "read from this container's own argument/environment, not queried from the relay "
+                "itself, so it is only as accurate as the two were kept in sync."
+            )
+            print(f"ERROR: {reason}")
+            return _finish(ExitCode.EXIT_RECHECK_EXCEEDS_LIFETIME, reason, len(remaining))
+
+        openwpm_version, firefox_version = (_normalize_version(v) for v in get_version())
+        base_provenance = read_base_provenance(arguments.data_root / "openwpm-base-provenance.txt")
+        _append_jsonl(
+            runs_path,
+            {
+                "run_id": run_id,
+                "started_at_utc": utcnow_iso(),
+                "crawl_date": arguments.crawl_date,
+                "repo_commit": _required_env("DV_REPO_COMMIT"),
+                "openwpm_tag": base_provenance.get("openwpm_tag"),
+                "openwpm_commit": base_provenance.get("openwpm_commit"),
+                "openwpm_version_string": openwpm_version,
+                "base_image": base_provenance.get("image"),
+                "base_image_id": base_provenance.get("image_id"),
+                "firefox_version": firefox_version,
+                # PR 4 (firefox-prefs) has not landed: the proxy and protection
+                # prefs are gate-asserted (see assert_prefs_pinned) but not yet
+                # pinned to fixed values, so a fingerprint of the full set would
+                # not be stable across runs. Absent rather than faked.
+                "pref_fingerprint": None,
+                "tp_cookies": browser_params.tp_cookies,
+                "instruments": {
+                    "http_instrument": browser_params.http_instrument,
+                    "cookie_instrument": browser_params.cookie_instrument,
+                    "navigation_instrument": browser_params.navigation_instrument,
+                    "dns_instrument": browser_params.dns_instrument,
+                },
+                "tracker_list_snapshots": [
+                    {"name": s.name, "snapshot_date": s.snapshot_date, "pinned_commit": s.pinned_commit}
+                    for s in TRACKER_LIST_SNAPSHOTS
+                ],
+                "display_mode": DISPLAY_MODE,
+                "conditions": [
+                    {
+                        "name": c.name,
+                        "pre_dwell_s": c.pre_dwell_s,
+                        "post_dwell_s": c.post_dwell_s,
+                        "action": c.action,
+                    }
+                    for c in ACTIVE_CONDITIONS
+                ],
+                "replicate_count": REPLICATE_COUNT,
+                "navigation_timeout_s": NAVIGATION_TIMEOUT_S,
+                "finalize_drain_tail_s": FINALIZE_DRAIN_TAIL_S,
+                "exit_recheck_seconds": arguments.exit_recheck_seconds,
+                "iproyal_lifetime_s": arguments.iproyal_lifetime,
+                "failure_limit": FAILURE_LIMIT,
+                "sites_path": str(arguments.sites),
+                "sites_sha256": hashlib.sha256(arguments.sites.read_bytes()).hexdigest(),
+                "site_count": len(sites),
+                "purpose": arguments.purpose,
+            },
+        )
+
+        if not remaining:
+            return _finish(ExitCode.OK, "nothing remaining", 0)
+
+        try:
+            check = verify_exit(geolocation, relay)
+        except ExitVerificationError as error:
+            if error.check is not None:
+                _append_jsonl(exit_checks_path, _exit_check_row(error.check, run_id))
+            print(f"ERROR: {error}")
+            print("Do NOT run the crawl.")
+            return _finish(ExitCode.RELAY_OR_EXIT_GATE_FAILED, str(error), len(remaining))
+        _append_jsonl(exit_checks_path, _exit_check_row(check, run_id))
+        checked_at_utc = check.checked_at_utc
+        last_checked_at = time.monotonic()
+
+        manager_params = ManagerParams(num_browsers=1)
+        manager_params.data_directory = cell_dir
+        manager_params.log_path = cell_dir / "openwpm.log"
+        manager_params.failure_limit = FAILURE_LIMIT
+
+        attempts = attempt_counts(visits_path)
+        try:
+            with TaskManager(
+                manager_params, [browser_params], SQLiteStorageProvider(db_path), None
+            ) as manager:
+                for index, item in enumerate(remaining):
+                    if time.monotonic() - last_checked_at >= arguments.exit_recheck_seconds:
+                        try:
+                            check = verify_exit(geolocation, relay)
+                        except ExitVerificationError as error:
+                            if error.check is not None:
+                                _append_jsonl(exit_checks_path, _exit_check_row(error.check, run_id))
+                            print(f"ERROR: {error}")
+                            print("Do NOT run the crawl. Aborting with visits remaining.")
+                            return _finish(
+                                ExitCode.RELAY_OR_EXIT_GATE_FAILED, str(error), len(remaining) - index
+                            )
+                        _append_jsonl(exit_checks_path, _exit_check_row(check, run_id))
+                        checked_at_utc = check.checked_at_utc
+                        last_checked_at = time.monotonic()
+
+                    key = (item.site.site_id, item.condition.name, item.replicate)
+                    sequence = CommandSequence(
+                        item.site.url,
+                        reset=True,
+                        retry_number=attempts.get(key, 0) + 1,
+                        callback=lambda ok, site_id=item.site.site_id: print(
+                            f"[{geolocation}] {site_id}: {'ok' if ok else 'failed'}"
+                        ),
                     )
-                )
-                sequence.get(
-                    sleep=item.condition.pre_dwell_s,
-                    timeout=NAVIGATION_TIMEOUT_S + int(item.condition.pre_dwell_s),
-                )
-                if item.condition.action != "none":
-                    raise NotImplementedError(
-                        f"condition action {item.condition.action!r} has no command yet"
+                    sequence.append_command(
+                        StampVisitCommand(
+                            visits_path=visits_path,
+                            site_id=item.site.site_id,
+                            condition=item.condition.name,
+                            replicate=item.replicate,
+                            arm_position=item.arm_position,
+                            work_list_position=item.position,
+                            run_id=run_id,
+                            checked_at_utc=checked_at_utc,
+                        )
                     )
-                sequence.append_command(BoundaryCommand(boundaries_path))
-                sequence.append_command(
-                    DwellCommand(item.condition.post_dwell_s),
-                    timeout=int(item.condition.post_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
-                )
-                manager.execute_command_sequence(sequence)
-    except CommandExecutionError as error:
-        print(f"ERROR: crawl failure budget exceeded: {error}")
-        return 4
+                    sequence.get(
+                        sleep=item.condition.pre_dwell_s,
+                        timeout=NAVIGATION_TIMEOUT_S + int(item.condition.pre_dwell_s),
+                    )
+                    # item.condition.action == "none" for every item here: _unsupported_condition_actions
+                    # already refused above if ACTIVE_CONDITIONS held anything else.
+                    sequence.append_command(BoundaryCommand(boundaries_path=boundaries_path, visits_path=visits_path))
+                    sequence.append_command(
+                        DwellCommand(seconds=item.condition.post_dwell_s),
+                        timeout=int(item.condition.post_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
+                    )
+                    manager.execute_command_sequence(sequence)
+        except CommandExecutionError as error:
+            print(f"ERROR: crawl failure budget exceeded: {error}")
+            return _finish(ExitCode.FAILURE_BUDGET_EXCEEDED, str(error))
+
+        try:
+            final_check = verify_exit(geolocation, relay)
+            _append_jsonl(exit_checks_path, _exit_check_row(final_check, run_id))
+        except ExitVerificationError as error:
+            if error.check is not None:
+                _append_jsonl(exit_checks_path, _exit_check_row(error.check, run_id))
+            print(f"WARNING: final exit check did not pass: {error}")
+
+        return _finish(ExitCode.OK, "completed", 0)
 
     try:
-        final_check = verify_exit(geolocation, relay)
-        _append_jsonl(exit_checks_path, _exit_check_row(final_check))
-    except ExitVerificationError as error:
-        if error.check is not None:
-            _append_jsonl(exit_checks_path, _exit_check_row(error.check))
-        print(f"WARNING: final exit check did not pass: {error}")
-
-    return 0
+        return _run()
+    except Exception as error:  # noqa: BLE001 -- see main()'s docstring: must retire with a traced runs.jsonl row, not a bare traceback.
+        # UNEXPECTED_FAILURE is by definition the case nobody anticipated, so
+        # the full trace goes to stdout; only the one-line reason fits in runs.jsonl.
+        print(traceback.format_exc())
+        return _finish(ExitCode.UNEXPECTED_FAILURE, f"unexpected failure: {error!r}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -497,26 +714,36 @@ def main(argv: list[str] | None = None) -> int:
     Args:
         argv: The argument vector; defaults to sys.argv when None.
     Returns:
-        exit_code: 0 completed; 1 no sites matched; 2 relay gate did not
-            pass or raised; 3 refused, proxy prefs not pinned to the
-            verified relay; 4 crawl failure budget exceeded; 5 another
-            invocation holds this cell's lock; 6 --exit-recheck-seconds
-            exceeds IPROYAL_LIFETIME.
+        exit_code: See `ExitCode` for what each value means.
+            `ExitCode.UNEXPECTED_FAILURE` covers any exception not handled
+            by a more specific path -- an OpenWPM `critical` command status
+            re-raises the browser child's own arbitrary exception type, for
+            instance -- so a crawl fault never resolves to the same code as
+            `ExitCode.NO_SITES_MATCHED`, which signals something that a
+            retry cannot fix.
     """
+    load_env_file()
     arguments = parse_arguments(argv)
     cell_dir = (
         arguments.data_root / "raw" / f"{arguments.crawl_date}_{arguments.geolocation}" / "openwpm"
     )
     cell_dir.mkdir(parents=True, exist_ok=True)
 
-    lock_handle = (cell_dir / ".lock").open("a")
+    lock_handle = (cell_dir / ".lock").open("ab")
     try:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         print(f"ERROR: another invocation holds the lock for this cell ({cell_dir / '.lock'})")
-        return 5
+        return ExitCode.CELL_LOCKED
     try:
+        # _crawl_cell catches everything internally so its own runs.jsonl end
+        # row is always written; this is a backstop against a fault in that
+        # catch itself, not the primary path.
         return _crawl_cell(arguments, cell_dir)
+    except Exception as error:  # noqa: BLE001 -- see docstring: must retire distinctly, not as a bare traceback.
+        print(traceback.format_exc())
+        print(f"ERROR: unexpected failure: {error!r}")
+        return ExitCode.UNEXPECTED_FAILURE
     finally:
         lock_handle.close()
 

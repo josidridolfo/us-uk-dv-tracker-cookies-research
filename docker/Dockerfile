@@ -35,5 +35,12 @@ VOLUME ["/data"]
 
 # The real entrypoint is `python -m dv_tracking.crawl.openwpm_run <geo> ...`
 # (see README); it is not a console script because this image never pip-
-# installs the project. The default command is just an import smoke test.
-CMD ["python", "-c", "import openwpm, sys; print('openwpm import ok on', sys.version.split()[0])"]
+# installs the project. The default command is an import smoke test against
+# the actual entrypoint module, not bare `import openwpm`: a bare import
+# succeeds even when every submodule's own dependencies (selenium, the
+# storage providers, utilities) are missing, since `openwpm/__init__.py`
+# does not import them. Importing the entrypoint module pulls in the full
+# chain -- task_manager, command_sequence, commands.*, config, errors,
+# storage.sql_provider, utilities.platform_utils, selenium, and the
+# dv_tracking side -- so a missing dependency fails at `docker run`, not mid-crawl.
+CMD ["python", "-c", "import dv_tracking.crawl.openwpm_run, sys; print('crawl entrypoint import ok on', sys.version.split()[0])"]
