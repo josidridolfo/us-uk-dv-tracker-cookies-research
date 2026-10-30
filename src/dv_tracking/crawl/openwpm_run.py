@@ -11,11 +11,15 @@ Container-side: imports `openwpm` (and `selenium` transitively) plus
 `tldextract`. Must not import `dv_tracking.utils`, `dv_tracking.crawl.models`,
 or `dv_tracking.persistence` -- all three do, and all three fail here.
 
-Only `no_interaction` runs. `reject_all`/`accept_all` exist in
-`constants.CONDITIONS` so the counterbalancing and sequence shape already
-fit the consent command landing later; `_crawl_cell` refuses before opening
-a browser, rather than guessing, if it is ever asked to run a condition it
-has no command for.
+All three conditions in `constants.CONDITIONS` are active. Detection and,
+for `reject_all`/`accept_all`, the decision itself run through
+`ConsentInteractionCommand`, which depends only on the
+`dv_tracking.crawl.consent_interaction.ConsentInteractor` interface, not on
+`AutoconsentInteractor` specifically -- a different engine means replacing
+this module's one `CONSENT_INTERACTOR` construction, not touching the
+command. `_crawl_cell` still refuses before opening a browser, rather than
+guessing, if it is ever asked to run a condition whose action the
+configured interactor does not support.
 """
 
 from __future__ import annotations
@@ -43,7 +47,14 @@ from openwpm.storage.sql_provider import SQLiteStorageProvider
 from openwpm.task_manager import TaskManager
 from openwpm.utilities.platform_utils import get_version
 
-from dv_tracking.constants import GEOLOCATIONS, NO_INTERACTION, TRACKER_LIST_SNAPSHOTS, Condition
+from dv_tracking.constants import CONDITIONS, GEOLOCATIONS, TRACKER_LIST_SNAPSHOTS, Condition
+from dv_tracking.crawl.consent_interaction import (
+    AutoconsentInteractor,
+    ConsentAction,
+    ConsentInteractionResult,
+    ConsentInteractor,
+    ScriptRunner,
+)
 from dv_tracking.crawl.resume import (
     attempt_counts,
     build_work_list,
@@ -65,10 +76,24 @@ from dv_tracking.sites import DVSupportSite
 INSTRUMENT: str = "openwpm"
 SCHEMA_VERSION: str = "1"
 
-# Only no_interaction is active this PR; see the module docstring.
-ACTIVE_CONDITIONS = (NO_INTERACTION,)
-SUPPORTED_CONDITION_ACTIONS: frozenset[str] = frozenset({"none"})
+# The interactor this cell drives for consent detection/decision. The one
+# construction below is this module's sole concrete-engine dependency; every
+# other reference to it, here and in ConsentInteractionCommand, is against
+# the ConsentInteractor interface, so a different engine means replacing
+# this one line, not touching the command. SUPPORTED_CONDITION_ACTIONS is
+# derived from it, not hand-kept in sync, so widening ACTIVE_CONDITIONS
+# beyond what the interactor supports is caught by
+# _unsupported_condition_actions rather than assumed away.
+CONSENT_INTERACTOR: ConsentInteractor = AutoconsentInteractor()
+SUPPORTED_CONDITION_ACTIONS: frozenset[str] = CONSENT_INTERACTOR.supported_actions
+ACTIVE_CONDITIONS = CONDITIONS
 REPLICATE_COUNT: int = 1
+# Hard bound on one visit's consent-interaction call; see
+# consent_interaction.ConsentInteractor.run. A banner that never resolves
+# ends the call at this bound, recorded as decision_status="timeout",
+# rather than hanging the visit.
+CONSENT_INTERACTION_TIMEOUT_S: float = 20.0
+CONSENT_INTERACTION_TIMEOUT_MARGIN_S: int = 10
 
 # xvfb, not headless: headless has no WebGL (a tracker signal and a bot
 # signal) and its computed style/layout differ, which is what Consent-O-
@@ -475,26 +500,45 @@ class StampVisitCommand(BaseCommand):
         )
 
 
-class BoundaryCommand(BaseCommand):
-    """Record the synthetic phase-boundary instant for an unclicked visit.
+class ConsentInteractionCommand(BaseCommand):
+    """Detect a consent banner and, for an active consent arm, apply its decision.
 
-    The no_interaction arm clicks nothing, but the matched-offset comparison
-    the plan requires needs a boundary instant at the same point in its
-    sequence as a real click would occupy; nothing wrote it before this.
-    `GetCommand`'s own alert probe (up to 0.5s, plus a further 1s when a
-    modal is present) sits between the pre-dwell ending and this command
-    running, so the offset is recorded rather than assumed fixed.
+    Every condition runs `interactor.run()` at the same point in the
+    sequence -- `action="none"` detects and never decides -- so the three
+    arms' pre-consent phases stay comparable; only the decision differs.
+    Folds in the old `BoundaryCommand`'s role: `boundary_utc` is the
+    engine-reported instant of a successful decision when there is one,
+    and this command's own timestamp -- a synthetic marker at the
+    equivalent point in the sequence -- otherwise (no decision requested,
+    no banner, or a failed/timed-out attempt). `GetCommand`'s own alert
+    probe (up to 0.5s, plus a further 1s when a modal is present) sits
+    between the pre-dwell ending and this command running, so the offset
+    from the preceding stamp is recorded rather than assumed fixed.
     """
 
-    def __init__(self, *, boundaries_path: Path, visits_path: Path) -> None:
+    def __init__(
+        self,
+        *,
+        interactor: ConsentInteractor,
+        action: ConsentAction,
+        timeout_s: float,
+        boundaries_path: Path,
+        interactions_path: Path,
+        visits_path: Path,
+    ) -> None:
+        self.interactor = interactor
+        self.action = action
+        self.timeout_s = timeout_s
         self.boundaries_path = boundaries_path
+        self.interactions_path = interactions_path
         self.visits_path = visits_path
 
     def __repr__(self) -> str:
-        return "BoundaryCommand()"
+        return f"ConsentInteractionCommand({self.action})"
 
-    def execute(self, webdriver, browser_params, manager_params, extension_socket) -> None:
-        boundary_utc = utcnow_iso()
+    def execute(self, webdriver: ScriptRunner, browser_params, manager_params, extension_socket) -> None:
+        result: ConsentInteractionResult = self.interactor.run(webdriver, self.action, self.timeout_s)
+        boundary_utc = result.clicked_at_utc or utcnow_iso()
         stamped_at = _stamped_at_utc(self.visits_path, self.visit_id)
         offset_from_get_start_s = (
             (datetime.fromisoformat(boundary_utc) - datetime.fromisoformat(stamped_at)).total_seconds()
@@ -507,8 +551,10 @@ class BoundaryCommand(BaseCommand):
                 "visit_id": self.visit_id,
                 "boundary_utc": boundary_utc,
                 "offset_from_get_start_s": offset_from_get_start_s,
+                "boundary_source": "engine_reported" if result.clicked_at_utc else "synthetic",
             },
         )
+        _append_jsonl(self.interactions_path, {"visit_id": self.visit_id, **result.to_json()})
 
 
 class DwellCommand(BaseCommand):
@@ -569,6 +615,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
     manifest_path = cell_dir / "manifest.json"
     visits_path = cell_dir / "visits.jsonl"
     boundaries_path = cell_dir / "boundaries.jsonl"
+    interactions_path = cell_dir / "interactions.jsonl"
     exit_checks_path = cell_dir / "exit-checks.jsonl"
     runs_path = cell_dir / "runs.jsonl"
     run_id = secrets.token_hex(8)
@@ -603,7 +650,10 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
         # active condition ran.
         unsupported_actions = _unsupported_condition_actions(ACTIVE_CONDITIONS)
         if unsupported_actions:
-            reason = f"unsupported condition action(s), no command exists yet: {unsupported_actions}"
+            reason = (
+                f"unsupported condition action(s), not in {CONSENT_INTERACTOR.name}'s "
+                f"supported_actions: {unsupported_actions}"
+            )
             print(f"[{geolocation}] ERROR: {reason}")
             return _finish(ExitCode.UNSUPPORTED_CONDITION, reason)
 
@@ -700,6 +750,11 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                 },
                 "save_content_types": browser_params.save_content,
                 "content_store_path": str(content_store_path),
+                "consent_interactor": {
+                    "name": CONSENT_INTERACTOR.name,
+                    "version": CONSENT_INTERACTOR.version,
+                    "supported_actions": sorted(CONSENT_INTERACTOR.supported_actions),
+                },
                 "tracker_list_snapshots": [
                     {"name": s.name, "snapshot_date": s.snapshot_date, "pinned_commit": s.pinned_commit}
                     for s in TRACKER_LIST_SNAPSHOTS
@@ -796,9 +851,17 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                         sleep=item.condition.pre_dwell_s,
                         timeout=NAVIGATION_TIMEOUT_S + int(item.condition.pre_dwell_s),
                     )
-                    # item.condition.action == "none" for every item here: _unsupported_condition_actions
-                    # already refused above if ACTIVE_CONDITIONS held anything else.
-                    sequence.append_command(BoundaryCommand(boundaries_path=boundaries_path, visits_path=visits_path))
+                    sequence.append_command(
+                        ConsentInteractionCommand(
+                            interactor=CONSENT_INTERACTOR,
+                            action=item.condition.action,
+                            timeout_s=CONSENT_INTERACTION_TIMEOUT_S,
+                            boundaries_path=boundaries_path,
+                            interactions_path=interactions_path,
+                            visits_path=visits_path,
+                        ),
+                        timeout=int(CONSENT_INTERACTION_TIMEOUT_S) + CONSENT_INTERACTION_TIMEOUT_MARGIN_S,
+                    )
                     sequence.append_command(
                         DwellCommand(seconds=item.condition.post_dwell_s),
                         timeout=int(item.condition.post_dwell_s) + DWELL_TIMEOUT_MARGIN_S,

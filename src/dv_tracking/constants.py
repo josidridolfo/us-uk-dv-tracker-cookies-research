@@ -32,6 +32,7 @@ TRACKER_LIST_SNAPSHOTS: tuple[TrackerListSnapshot, ...] = (
     TrackerListSnapshot("Open Cookie Database", "2026-06-13", None),
     TrackerListSnapshot("Consent-O-Matic", "2026-05-16", "8ca8500"),
     TrackerListSnapshot("CMP vendor hosts", "2026-07-25", None),
+    TrackerListSnapshot("DuckDuckGo autoconsent", "2026-10-30", "v17.1.0"),
 )
 
 # UK's ISO 3166-1 alpha-2 code is GB; the project label for that cell is "uk".
@@ -60,6 +61,12 @@ DATACENTER_KEYWORDS: tuple[str, ...] = (
 )
 
 
+# Shared with dv_tracking.crawl.consent_interaction, which drives the
+# interactor on this same vocabulary; defined here rather than duplicated
+# there, since Condition.action is the vocabulary's point of origin.
+ConsentAction = Literal["none", "reject", "accept"]
+
+
 @dataclass(frozen=True)
 class Condition:
     """One consent-arm condition: its dwell schedule and which control, if any, it clicks."""
@@ -67,7 +74,7 @@ class Condition:
     name: str
     pre_dwell_s: float
     post_dwell_s: float
-    action: Literal["none", "reject", "accept"]
+    action: ConsentAction
 
 
 # Dwell is provisional until the calibration pass sets it from measured banner

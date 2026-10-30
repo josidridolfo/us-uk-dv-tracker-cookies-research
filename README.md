@@ -59,7 +59,8 @@ Exit codes are the `ExitCode` enum in `openwpm_run.py`: 0 completed, 1 no
 sites matched, 2 the relay/exit gate did not pass or raised, 3 prefs not
 pinned, 4 the crawl failure budget was exceeded, 5 another invocation holds
 the cell lock, 6 `--exit-recheck-seconds` leaves too little margin before
-`--iproyal-lifetime`, 7 an active condition has no command yet, 8 any other
+`--iproyal-lifetime`, 7 an active condition's action is not in the
+configured consent interactor's `supported_actions`, 8 any other
 unanticipated failure -- a distinct code so it is never mistaken for "no
 sites matched" (1) and read as not worth retrying.
 
@@ -112,12 +113,25 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   *before* the page load, not after: a failed get would otherwise leave no
   identity for that visit_id, and resume would re-crawl it on every future
   invocation forever.
-- `boundaries.jsonl` -- one line per visit recording the synthetic
-  phase-boundary instant the `no_interaction` arm logs in place of a click,
-  and `offset_from_get_start_s`: `GetCommand`'s own alert probe adds 0.5 to
-  1.5 seconds between the pre-dwell ending and this boundary running, site-
-  dependently, so the matched-offset comparison the design calls for needs
-  this recorded rather than assumed fixed.
+- `boundaries.jsonl` -- one line per visit recording `boundary_utc`: the
+  consent interactor's own reported click instant for a successful
+  `reject_all`/`accept_all` decision (`boundary_source: "engine_reported"`),
+  or this command's own timestamp otherwise -- `no_interaction`, no banner
+  detected, or a failed/timed-out attempt (`boundary_source: "synthetic"`).
+  `offset_from_get_start_s` is `boundary_utc` minus the preceding
+  `StampVisitCommand`'s timestamp: `GetCommand`'s own alert probe adds 0.5
+  to 1.5 seconds between the pre-dwell ending and this command running,
+  site-dependently, so the matched-offset comparison the design calls for
+  needs this recorded rather than assumed fixed.
+- `interactions.jsonl` -- one line per visit from the same command,
+  recording the consent interactor's full outcome: `engine_name`/
+  `engine_version`, `banner_present`, `detected_cmps`, `matched_popup_cmp`,
+  `action_requested`, `decision_status` (`not_attempted` for
+  `no_interaction`; `no_banner`, `applied`, `failed`, or `timeout` for
+  `reject_all`/`accept_all`), the raw engine messages, `clicks`, and
+  `duration_s`. A failed or timed-out decision is never reported as
+  `applied`, and a visit with no banner is distinguishable from one where
+  a decision silently did nothing.
 - `block-verdicts.jsonl` and `exclusion-report.json` -- written by the
   blocked-visit detection pass below, not by the crawl itself; absent until
   that pass has run against the cell at least once.
@@ -145,6 +159,56 @@ For five seconds after `FinalizeCommand` tears down the tab, records can
 still arrive and get attributed to that `visit_id` with timestamps past
 `boundary_utc + post_dwell_s` (`runs.jsonl`'s `finalize_drain_tail_s`); an
 analysis that truncates strictly at that boundary will silently drop them.
+
+## Consent interaction
+
+Detection and, for `reject_all`/`accept_all`, the decision itself run
+through `dv_tracking.crawl.consent_interaction.ConsentInteractor` -- an
+interface, not a hardcoded engine. `ConsentInteractionCommand` calls
+`interactor.run(webdriver, action, timeout_s)` at the same point in the
+sequence for every condition; `action="none"` runs the identical
+detection path and simply never requests a decision, which is what keeps
+the three arms' pre-consent phases comparable. The command is unaware of
+which library backs the interactor.
+
+`AutoconsentInteractor` is the current implementation, built on a pinned
+release of DuckDuckGo's `autoconsent` (vendored in
+`tracker_lists/autoconsent/`; see that directory's `PROVENANCE.md`).
+Detection and decision share one bounded call because the engine itself is
+built that way: `AutoConsent._start()` always detects first and only acts
+when a decision is configured, so there is no separate round-trip that
+could see a different DOM than the one the decision was made against.
+Two choices follow from the vendored engine's own defaults, not from a
+documentation read: `enablePrehide` is forced `false` (upstream defaults
+it to `true`, which hides matched banner elements as a side effect of
+merely looking for one) and `detectRetries` is capped at `1`, because the
+engine's own `findCmp()` waits for a DOM mutation on every retry past the
+first, with a 60-second default timeout and no config flag to shorten or
+disable it -- confirmed by running the built script against a synthetic
+no-banner page, where a `detectRetries` of 5 reported `timeout` well
+before the engine's own retry loop gave up. By the time this command
+runs, the page has already sat through the arm's pre-dwell (>=10s), which
+is where an asynchronously-loaded banner is expected to have already
+appeared.
+
+`decision_status` is `not_attempted` (no decision requested),
+`no_banner` (nothing to act on), `applied`, `failed`, or `timeout` --
+never collapsed into each other, so a silently failed click cannot look
+like a clean success or an absent banner. `clicked_at_utc` comes from the
+engine's own `state.endTime` on a successful decision, not a timestamp
+taken after the fact; `category_targets` is always `None` for this
+engine, which exposes an opt-out/opt-in decision per CMP rather than a
+per-category toggle. The vendored `rules.json` (1,327 CMP entries) covers
+`Termly`, `cookieyes`, `cookieyes-legacy`, and `wix` among this project's
+ten pilot sites; it does not cover Elementor's cookie widget or the
+Enfold/Avia theme consent -- a measured coverage gap, not something
+patched locally.
+
+The vendored Consent-O-Matic assets (`tracker_lists/consentomatic/`)
+stay in place as an independent presence detector consumed by
+`dv_tracking.classify.banner`, not as the decision engine; two detectors
+disagreeing on the same page is calibration evidence, not something this
+command reconciles.
 
 ## Response-body capture
 
@@ -204,8 +268,8 @@ A site is usable only if every arm it attempted was served: one blocked arm
 makes the site's contribution to the consent-arm comparison unusable, not
 just that arm, so dropping only the blocked visit is wrong. The rule is a
 pure function over a set of visit verdicts and does not special-case the
-arm count, so it holds unchanged once `reject_all`/`accept_all` join
-`no_interaction`.
+arm count, so it holds unchanged now that all three of `no_interaction`,
+`reject_all`, and `accept_all` are active.
 
 This module imports `plyvel` (the content-store reader only) and therefore
 runs inside the crawl container, same as `openwpm_run.py`:

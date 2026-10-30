@@ -48,6 +48,17 @@ snapshots are vendored into this repo with the version + date recorded.
 - Full detail: `tracker_lists/consentomatic/PROVENANCE.md`.
 - License: MIT
 
+## DuckDuckGo autoconsent
+
+- Snapshot date: 2026-10-30 (pinned npm version `v17.1.0`)
+- Source: https://github.com/duckduckgo/autoconsent
+- Rules: 1,327 CMP entries from the packaged `rules/rules.json`.
+- Drives the live consent-interaction decision (detect + opt-out/opt-in);
+  `tracker_lists/consentomatic/` stays as an independent presence detector
+  only, not the decision engine.
+- Full detail: `tracker_lists/autoconsent/PROVENANCE.md`.
+- License: MPL-2.0
+
 ## CMP vendor host list
 
 - Snapshot date: 2026-07-25 (`cmp-vendors v1`)
