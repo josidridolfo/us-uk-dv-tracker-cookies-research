@@ -43,15 +43,15 @@ pip-installs the project, so no entry point would resolve):
 python -m dv_tracking.crawl.openwpm_run uk --sites /data/corpus/uk_selected_250.csv
 ```
 
-**This currently refuses to crawl.** Firefox's proxy and tracking-protection
-prefs are not pinned until the next PR, so before building any
-`CommandSequence` the runner asserts `BrowserParams` already pins a manual
-proxy at the verified relay's host and port, pins `privacy.trackingprotection.*`
-off, and pins `tp_cookies` so no third-party cookie gets blocked or
-partitioned -- exiting 3 if any of it is missing. That assertion proves
-configuration, not behaviour: prefs are reapplied on every browser relaunch,
-so it means something continuously once pinned, but WebRTC and DNS-over-HTTPS
-bypass `network.proxy.*` entirely, and nothing today reads the exit IP from
+Before building any `CommandSequence`, the runner pins `BrowserParams.prefs`
+from the just-verified relay address and asserts the result: a manual proxy
+at the relay's host and port, `privacy.trackingprotection.*` off,
+`network.trr.mode = 5` (DNS-over-HTTPS off by choice, not merely by Firefox's
+current default) and `media.peerconnection.enabled = False` (WebRTC off), and
+`tp_cookies` so no third-party cookie gets blocked or partitioned -- exiting 3
+if any of it does not match. That assertion proves configuration, not
+behaviour: prefs are reapplied on every browser relaunch, so it means
+something continuously once pinned, but nothing today reads the exit IP from
 inside a page load the way the gate itself does from outside. Proving the
 browser's own traffic took this path is a later PR.
 
@@ -64,12 +64,12 @@ unanticipated failure -- a distinct code so it is never mistaken for "no
 sites matched" (1) and read as not worth retrying.
 
 `--iproyal-lifetime` (default from the `IPROYAL_LIFETIME` env var, `10m`)
-and `--exit-recheck-seconds` (default `600`) share the same duration format
+and `--exit-recheck-seconds` (default `300`) share the same duration format
 ("10m", "600s", or a bare integer of seconds) and are compared directly: the
 recheck cadence must leave at least 30 seconds of margin before the relay
-session could rotate, so the out-of-the-box defaults -- both 600 seconds --
-now refuse (exit 6) rather than sitting exactly on that boundary. Pass a
-shorter `--exit-recheck-seconds` or a longer `--iproyal-lifetime` explicitly.
+session could rotate. The defaults leave that margin out of the box; a
+cadence raised to sit within 30 seconds of `--iproyal-lifetime` refuses
+(exit 6) rather than being accepted on the boundary.
 
 One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
 
@@ -81,14 +81,21 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   time an invocation gets past the check that refused it -- `refused: true`
   describes the last invocation's own gate result, not the cell permanently.
 - `runs.jsonl` -- two lines per invocation, joined by `run_id`: a start row
-  (repo commit, image and Firefox versions, `tp_cookies`, which instruments
-  were enabled, the active conditions and their dwells, the finalize drain
-  tail, the sites file and its hash, and other facts that can legitimately
-  differ between a cell's invocations) and an end row (`ended_at_utc`, the
-  exit code, a reason, and how many visits were left). Every exit from the
-  crawl itself writes the end row, including an unanticipated exception, so
-  a cell that stopped partway is never silent about why; the one case with
-  no row at all is losing the cell lock before a `run_id` exists yet.
+  (repo commit, image and Firefox versions, `tp_cookies`, the full pinned
+  `prefs` dict as `pinned_prefs`, and `pref_fingerprint` -- a SHA-256 over
+  the tracking-protection and leak-closure prefs plus `tp_cookies`, so two
+  cells can be compared for configuration drift without diffing the dict by
+  hand. The proxy target is deliberately left out of the hash: the UK and
+  US arms point at different relays by design, so including it would make
+  every cell's fingerprint differ even when the protections are identical.
+  The start row also carries which instruments were enabled, the active
+  conditions and their dwells, the finalize drain tail, the sites file and
+  its hash, and other facts that can legitimately differ between a cell's
+  invocations) and an end row (`ended_at_utc`, the exit code, a reason, and
+  how many visits were left). Every exit from the crawl itself writes the
+  end row, including an unanticipated exception, so a cell that stopped
+  partway is never silent about why; the one case with no row at all is
+  losing the cell lock before a `run_id` exists yet.
 - `exit-checks.jsonl` -- one line per exit-gate check taken, pass or fail,
   carrying `run_id` and its own `checked_at_utc`.
 - `visits.jsonl` -- one line per attempted visit, mapping OpenWPM's `visit_id`

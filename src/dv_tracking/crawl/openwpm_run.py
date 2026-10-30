@@ -28,6 +28,7 @@ import os
 import secrets
 import time
 import traceback
+from collections.abc import Mapping
 from datetime import date, datetime
 from enum import IntEnum
 from pathlib import Path
@@ -90,7 +91,7 @@ FINALIZE_DRAIN_TAIL_S: float = 5.0
 # is a methodological choice, not an inherited one.
 FAILURE_LIMIT: int = 25
 
-DEFAULT_EXIT_RECHECK_SECONDS: int = 600
+DEFAULT_EXIT_RECHECK_SECONDS: int = 300
 # A recheck cadence equal to the relay session lifetime sits exactly on the
 # boundary the guard exists to police: a rotation landing just after a
 # check would go unobserved for a full session. The margin forces a real
@@ -104,6 +105,14 @@ PROTECTION_PREFS: dict[str, bool] = {
     "privacy.trackingprotection.enabled": False,
     "privacy.trackingprotection.cryptomining.enabled": False,
     "privacy.trackingprotection.fingerprinting.enabled": False,
+}
+
+# Closes the two paths that leave the tunnel without going through
+# network.proxy.* at all: DNS-over-HTTPS and WebRTC's ICE negotiation.
+# See proxy_prefs() for why network.proxy.socks_remote_dns is not here too.
+LEAK_CLOSURE_PREFS: dict[str, bool | int] = {
+    "network.trr.mode": 5,
+    "media.peerconnection.enabled": False,
 }
 # configure_firefox.privacy() maps tp_cookies="always" to
 # network.cookie.cookieBehavior=0 (accept all, no partitioning): dFPI/Total
@@ -275,14 +284,46 @@ def verify_exit(geolocation: str, relay: RelayAddress) -> ExitCheck:
     return check
 
 
+def proxy_prefs(relay: RelayAddress) -> dict[str, str | int]:
+    """
+    Build the manual-proxy prefs a verified relay must be pinned at.
+
+    The sole source for these five keys: `_crawl_cell` writes them into
+    `BrowserParams.prefs` and `assert_prefs_pinned` checks against this same
+    mapping, so the two cannot drift apart by one of them changing alone.
+
+    `network.proxy.socks_remote_dns` is deliberately absent. It governs DNS
+    resolution only when `network.proxy.socks` is configured, which this
+    relay never is (HTTP/HTTPS only, the two keys above). An HTTP proxy
+    never resolves the target hostname locally in the first place -- the
+    browser sends it an absolute-form request line for plain HTTP and a
+    CONNECT host:port for HTTPS -- so pinning a SOCKS-only pref here would
+    assert a protection this proxy type does not need. `assert_prefs_pinned`
+    refuses outright if `network.proxy.socks` ever appears, rather than
+    leaving that as an assumption this function's absence only narrates.
+
+    Args:
+        relay: The relay address the exit gate just verified.
+    Returns:
+        prefs: The network.proxy.* keys a manual HTTP/HTTPS proxy needs pinned at that relay.
+    """
+    return {
+        "network.proxy.type": 1,
+        "network.proxy.http": relay.host,
+        "network.proxy.http_port": relay.port,
+        "network.proxy.ssl": relay.host,
+        "network.proxy.ssl_port": relay.port,
+    }
+
+
 def assert_prefs_pinned(browser_params: BrowserParams, relay: RelayAddress) -> None:
     """
     Assert the browser is configured so its own defaults cannot distort this study.
 
-    Proves configuration, not behaviour: WebRTC and DNS-over-HTTPS bypass
-    `network.proxy.*` entirely, and nothing today reads the exit IP from
-    inside a page load the way the gate itself does from outside. Proving
-    the browser's own traffic took this path is a later PR.
+    Proves configuration, not behaviour: nothing today reads the exit IP
+    from inside a page load the way the gate itself does from outside, so a
+    pref pinned here is not proof the browser's own traffic took this path.
+    Proving that is a later PR.
 
     Args:
         browser_params: The browser's parameter object (prefs and tp_cookies).
@@ -290,25 +331,25 @@ def assert_prefs_pinned(browser_params: BrowserParams, relay: RelayAddress) -> N
     Raises:
         ProxyPrefsNotPinnedError: When prefs do not pin a manual proxy at the relay.
         ProtectionPrefsNotPinnedError: When a browser protection that would
-            block or partition exactly what this study counts is not
-            pinned off.
+            block or partition exactly what this study counts, or a leak
+            path around the proxy, is not pinned off.
     """
     prefs = browser_params.prefs
-    expected_proxy = {
-        "network.proxy.type": 1,
-        "network.proxy.http": relay.host,
-        "network.proxy.http_port": relay.port,
-        "network.proxy.ssl": relay.host,
-        "network.proxy.ssl_port": relay.port,
-    }
+    if "network.proxy.socks" in prefs:
+        raise ProxyPrefsNotPinnedError(
+            "prefs configure network.proxy.socks; this relay is HTTP/HTTPS only and "
+            "network.proxy.socks_remote_dns is not pinned to cover a SOCKS proxy"
+        )
+    expected_proxy = proxy_prefs(relay)
     proxy_mismatches = {k: (prefs.get(k), v) for k, v in expected_proxy.items() if prefs.get(k) != v}
     if proxy_mismatches:
         raise ProxyPrefsNotPinnedError(
             f"prefs do not pin a manual proxy at {relay.host}:{relay.port}: {proxy_mismatches}"
         )
 
-    protection_mismatches = {
-        k: (prefs.get(k), v) for k, v in PROTECTION_PREFS.items() if prefs.get(k) != v
+    expected_protections = PROTECTION_PREFS | LEAK_CLOSURE_PREFS
+    protection_mismatches: dict[str, tuple[object, object]] = {
+        k: (prefs.get(k), v) for k, v in expected_protections.items() if prefs.get(k) != v
     }
     if browser_params.tp_cookies != PINNED_TP_COOKIES:
         protection_mismatches["tp_cookies"] = (browser_params.tp_cookies, PINNED_TP_COOKIES)
@@ -316,6 +357,30 @@ def assert_prefs_pinned(browser_params: BrowserParams, relay: RelayAddress) -> N
         raise ProtectionPrefsNotPinnedError(
             f"browser protections are not pinned off for measurement: {protection_mismatches}"
         )
+
+
+def pref_fingerprint(prefs: Mapping[str, object], tp_cookies: str) -> str:
+    """
+    Hash the pinned prefs and tp_cookies into a short, stable fingerprint.
+
+    Keys are sorted before hashing, so two cells pinned to the same values
+    in a different insertion order still compare equal. Callers pass the
+    subset of `BrowserParams.prefs` expected to be invariant across cells --
+    `PROTECTION_PREFS | LEAK_CLOSURE_PREFS`, not the full dict. The proxy
+    target (`proxy_prefs(relay)`) varies by design between the UK and US
+    arms, each pointed at a different relay; folding it in would make every
+    cell's fingerprint differ even when the protections are identical,
+    defeating the cross-cell comparison this exists for. The full dict,
+    proxy target included, is recorded separately as `pinned_prefs`.
+
+    Args:
+        prefs: The subset of pinned prefs expected to be invariant across cells.
+        tp_cookies: The pinned `tp_cookies` value.
+    Returns:
+        fingerprint: A hex SHA-256 digest of the canonical JSON encoding.
+    """
+    canonical = json.dumps({"prefs": prefs, "tp_cookies": tp_cookies}, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class StampVisitCommand(BaseCommand):
@@ -529,6 +594,10 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
         # dns_responses would be near-empty while provenance implied DNS was
         # measured.
         browser_params.dns_instrument = False
+        # The one write site for these three dicts; assert_prefs_pinned reads
+        # proxy_prefs(relay) and the same PROTECTION_PREFS/LEAK_CLOSURE_PREFS
+        # constants back, so this and the gate cannot drift apart silently.
+        browser_params.prefs = proxy_prefs(relay) | PROTECTION_PREFS | LEAK_CLOSURE_PREFS
 
         try:
             assert_prefs_pinned(browser_params, relay)
@@ -558,6 +627,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
 
         openwpm_version, firefox_version = (_normalize_version(v) for v in get_version())
         base_provenance = read_base_provenance(arguments.data_root / "openwpm-base-provenance.txt")
+        invariant_prefs = PROTECTION_PREFS | LEAK_CLOSURE_PREFS
         _append_jsonl(
             runs_path,
             {
@@ -571,11 +641,8 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                 "base_image": base_provenance.get("image"),
                 "base_image_id": base_provenance.get("image_id"),
                 "firefox_version": firefox_version,
-                # PR 4 (firefox-prefs) has not landed: the proxy and protection
-                # prefs are gate-asserted (see assert_prefs_pinned) but not yet
-                # pinned to fixed values, so a fingerprint of the full set would
-                # not be stable across runs. Absent rather than faked.
-                "pref_fingerprint": None,
+                "pref_fingerprint": pref_fingerprint(invariant_prefs, browser_params.tp_cookies),
+                "pinned_prefs": browser_params.prefs,
                 "tp_cookies": browser_params.tp_cookies,
                 "instruments": {
                     "http_instrument": browser_params.http_instrument,
