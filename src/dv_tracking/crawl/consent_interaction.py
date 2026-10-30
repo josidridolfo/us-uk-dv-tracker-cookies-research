@@ -34,7 +34,7 @@ DEFAULT_AUTOCONSENT_RULES_PATH: Path = AUTOCONSENT_DIR / "rules.json"
 # Pinned npm version; see tracker_lists/autoconsent/PROVENANCE.md.
 AUTOCONSENT_VERSION: str = "17.1.0"
 
-DecisionStatus = Literal["not_attempted", "no_banner", "applied", "failed", "timeout"]
+DecisionStatus = Literal["not_attempted", "no_banner", "applied", "failed", "timeout", "instrument_error"]
 
 # Retries inside the engine's own detection loop. Capped at 1, not tuned
 # up for recall: findCmp() waits for a DOM mutation on every retry past
@@ -96,12 +96,16 @@ class ConsentInteractor(Protocol):
     """Finds a consent banner and, when asked, applies an arm's decision to it.
 
     `run()` must not raise for a runtime fault (a WebDriver error, a script
-    exception, an unparseable result): it returns a `decision_status="failed"`
-    result instead, carrying the fault in `error`. `ConsentInteractionCommand`
-    depends on this -- a result is always available to write to
-    `interactions.jsonl` and to derive `boundary_utc` from, even when the
-    interaction itself went wrong. The only exception `run()` may raise is
-    `ValueError` for an `action` outside `supported_actions`, a precondition
+    exception, an unparseable result): it returns a
+    `decision_status="instrument_error"` result instead, carrying the
+    fault in `error`. That status is reserved for a call that never
+    produced a real engine result and must never be confused with
+    `"failed"`, which means the engine ran and reported its own decision
+    as unsuccessful. `ConsentInteractionCommand` depends on this -- a
+    result is always available to write to `interactions.jsonl` and to
+    derive `boundary_utc` from, even when the interaction itself went
+    wrong. The only exception `run()` may raise is `ValueError` for an
+    `action` outside `supported_actions`, a precondition
     the exit-7 refusal gate (`_unsupported_condition_actions`) already screens
     for before any browser opens.
     """
@@ -136,6 +140,10 @@ def _epoch_ms_to_iso(epoch_ms: float) -> str:
 # other arguments are passed from Python, since the action, timeout, and
 # full rule set are baked into the script text once per interactor call
 # rather than marshalled through the WebDriver wire protocol per visit.
+# The IIFE takes it as a named `callback` parameter rather than
+# re-reading `arguments[0]` inside its own (zero-argument) body, which
+# resolves to `undefined` there -- confirmed empirically under real
+# Firefox/geckodriver, where every call ran out the clock as a timeout.
 #
 # Settling on `_start()`'s own return value is not reliable for a
 # decision: upstream's `detectPopups()` calls `onFirstPopupAppears(cmp)`
@@ -152,8 +160,7 @@ def _epoch_ms_to_iso(epoch_ms: float) -> str:
 # `doOptIn` sends synchronously, in the same tick as the engine's own
 # final state update, right before returning.
 _BOOTSTRAP_TEMPLATE = """
-return (function () {
-  const callback = arguments[0];
+return (function (callback) {
   const action = __ACTION__;
   const timeoutMs = __TIMEOUT_MS__;
   const messages = [];
@@ -203,7 +210,7 @@ return (function () {
   ]).then((outcome) => {
     callback({ timedOut: outcome.timedOut, state: engine.state, messages: messages });
   });
-})();
+})(arguments[0]);
 """
 
 _ACTION_TO_AUTO_ACTION: dict[str, str] = {"none": "null", "reject": '"optOut"', "accept": '"optIn"'}
@@ -273,16 +280,23 @@ class AutoconsentInteractor:
             webdriver.set_script_timeout(timeout_s + SCRIPT_TIMEOUT_MARGIN_S)
             raw = webdriver.execute_async_script(script)
         except Exception as error:  # noqa: BLE001 -- a script/WebDriver fault must still produce a row, not crash the visit
-            return self._failed(action, time.monotonic() - start, repr(error))
+            return self._instrument_error(action, time.monotonic() - start, repr(error))
         return self._parse(action, raw, time.monotonic() - start)
 
-    def _failed(self, action: ConsentAction, duration_s: float, error: str) -> ConsentInteractionResult:
-        """Build a `decision_status="failed"` result for a call that never returned a script result."""
+    def _instrument_error(self, action: ConsentAction, duration_s: float, error: str) -> ConsentInteractionResult:
+        """Build a `decision_status="instrument_error"` result for a call that never returned a real engine result.
+
+        Covers a WebDriver/script exception and an unparseable script
+        payload alike: both mean the harness lost track of what happened
+        in-page, not that a banner declined to yield. Keeping this status
+        separate from `"failed"` keeps an instrument fault from being
+        read as a consent outcome.
+        """
         return ConsentInteractionResult(
             engine_name=self.name,
             engine_version=self.version,
             action_requested=action,
-            decision_status="failed",
+            decision_status="instrument_error",
             banner_present=False,
             detected_cmps=(),
             matched_popup_cmp=None,
@@ -297,7 +311,7 @@ class AutoconsentInteractor:
     def _parse(self, action: ConsentAction, raw: object, duration_s: float) -> ConsentInteractionResult:
         """Build a result from the bootstrap script's `{timedOut, state, messages}` payload."""
         if not isinstance(raw, dict):
-            return self._failed(action, duration_s, f"unexpected script result: {raw!r}")
+            return self._instrument_error(action, duration_s, f"unexpected script result: {raw!r}")
 
         timed_out = bool(raw.get("timedOut"))
         state = raw.get("state") or {}

@@ -128,10 +128,14 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   `engine_version`, `banner_present`, `detected_cmps`, `matched_popup_cmp`,
   `action_requested`, `decision_status` (`not_attempted` for
   `no_interaction`; `no_banner`, `applied`, `failed`, or `timeout` for
-  `reject_all`/`accept_all`), the raw engine messages, `clicks`, and
-  `duration_s`. A failed or timed-out decision is never reported as
-  `applied`, and a visit with no banner is distinguishable from one where
-  a decision silently did nothing.
+  `reject_all`/`accept_all`; `instrument_error` for any of the three when
+  the call itself never produced a real engine result), the raw engine
+  messages, `clicks`, and `duration_s`. A failed or timed-out decision is
+  never reported as `applied`, and a visit with no banner is
+  distinguishable from one where a decision silently did nothing.
+  `instrument_error` is kept apart from `failed`: the latter means the
+  engine ran and reported its own decision unsuccessful, the former means
+  the harness never got a real result to read.
 - `block-verdicts.jsonl` and `exclusion-report.json` -- written by the
   blocked-visit detection pass below, not by the crawl itself; absent until
   that pass has run against the cell at least once.
@@ -192,9 +196,12 @@ is where an asynchronously-loaded banner is expected to have already
 appeared.
 
 `decision_status` is `not_attempted` (no decision requested),
-`no_banner` (nothing to act on), `applied`, `failed`, or `timeout` --
-never collapsed into each other, so a silently failed click cannot look
-like a clean success or an absent banner. `clicked_at_utc` comes from the
+`no_banner` (nothing to act on), `applied`, `failed`, `timeout`, or
+`instrument_error` (a WebDriver/script fault, or an unparseable script
+result -- no real engine result was ever obtained) -- never collapsed
+into each other, so a silently failed click cannot look like a clean
+success or an absent banner, and a harness fault cannot look like a
+measured consent outcome. `clicked_at_utc` comes from the
 engine's own `state.endTime` on a successful decision, not a timestamp
 taken after the fact; `category_targets` is always `None` for this
 engine, which exposes an opt-out/opt-in decision per CMP rather than a
