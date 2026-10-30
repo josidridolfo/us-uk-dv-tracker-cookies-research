@@ -36,8 +36,9 @@ from pathlib import Path
 from openwpm.command_sequence import CommandSequence
 from openwpm.commands.browser_commands import FinalizeCommand
 from openwpm.commands.types import BaseCommand
-from openwpm.config import BrowserParams, ManagerParams
+from openwpm.config import ALL_RESOURCE_TYPES, BrowserParams, ManagerParams
 from openwpm.errors import CommandExecutionError
+from openwpm.storage.leveldb import LevelDbProvider
 from openwpm.storage.sql_provider import SQLiteStorageProvider
 from openwpm.task_manager import TaskManager
 from openwpm.utilities.platform_utils import get_version
@@ -90,6 +91,16 @@ FINALIZE_DRAIN_TAIL_S: float = 5.0
 # site Tranco crawl; on a ~250-site corpus with a handful of dead sites it
 # is a methodological choice, not an inherited one.
 FAILURE_LIMIT: int = 25
+
+CONTENT_STORE_DIRNAME: str = "content-store.leveldb"
+# main_frame is the page HTML the probe must classify. sub_frame is
+# included because consent platforms commonly render their banner in an
+# iframe; omitting it would systematically miss exactly what the probe
+# needs to detect. script captures the CMP's own code and xmlhttprequest
+# the configuration it fetches after load. Images, media, fonts and
+# stylesheets are excluded to keep the store tractable at full-sweep
+# scale; a calibration pass can widen this set with the flag below.
+DEFAULT_SAVE_CONTENT_TYPES: str = "main_frame,sub_frame,script,xmlhttprequest"
 
 DEFAULT_EXIT_RECHECK_SECONDS: int = 300
 # A recheck cadence equal to the relay session lifetime sits exactly on the
@@ -183,6 +194,36 @@ def _parse_duration_seconds(value: str) -> int:
     if value and value[-1] in multipliers:
         return int(value[:-1]) * multipliers[value[-1]]
     return int(value)
+
+
+def _parse_save_content_types(value: str) -> str:
+    """
+    Validate a comma-separated save_content resource-type list against ALL_RESOURCE_TYPES.
+
+    Runs as an argparse `type`, so it is applied during argument parsing --
+    before any browser opens -- rather than letting OpenWPM's own
+    ConfigError surface mid-crawl once the TaskManager is already up.
+
+    Args:
+        value: The raw --save-content-types argument.
+    Returns:
+        canonical: The requested types, stripped and deduplicated but in
+            the given order, as a comma-separated string. OpenWPM's own
+            split on `BrowserParams.save_content` does not strip
+            whitespace, so returning the input unchanged would let a value
+            like "main_frame, script" pass this check on its stripped form
+            and then fail OpenWPM's own validation on the unstripped one.
+    Raises:
+        argparse.ArgumentTypeError: Naming the type(s) not in ALL_RESOURCE_TYPES.
+    """
+    requested = list(dict.fromkeys(t.strip() for t in value.split(",") if t.strip()))
+    unknown = sorted(set(requested) - ALL_RESOURCE_TYPES)
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unrecognised save_content resource type(s) {unknown}; valid types are "
+            f"{sorted(ALL_RESOURCE_TYPES)}"
+        )
+    return ",".join(requested)
 
 
 def _required_env(name: str) -> str:
@@ -512,6 +553,11 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         "--iproyal-lifetime", type=_parse_duration_seconds, default=os.environ.get("IPROYAL_LIFETIME", "10m")
     )
     parser.add_argument("--purpose", choices=("calibration", "sweep"), default="sweep")
+    parser.add_argument(
+        "--save-content-types",
+        type=_parse_save_content_types,
+        default=os.environ.get("DV_SAVE_CONTENT_TYPES", DEFAULT_SAVE_CONTENT_TYPES),
+    )
     return parser.parse_args(argv)
 
 
@@ -519,6 +565,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
     """Run one cell's crawl once the cell lock is held; see main() for the exit-code contract."""
     geolocation = arguments.geolocation
     db_path = cell_dir / "crawl-data.sqlite"
+    content_store_path = cell_dir / CONTENT_STORE_DIRNAME
     manifest_path = cell_dir / "manifest.json"
     visits_path = cell_dir / "visits.jsonl"
     boundaries_path = cell_dir / "boundaries.jsonl"
@@ -594,6 +641,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
         # dns_responses would be near-empty while provenance implied DNS was
         # measured.
         browser_params.dns_instrument = False
+        browser_params.save_content = arguments.save_content_types
         # The one write site for these three dicts; assert_prefs_pinned reads
         # proxy_prefs(relay) and the same PROTECTION_PREFS/LEAK_CLOSURE_PREFS
         # constants back, so this and the gate cannot drift apart silently.
@@ -650,6 +698,8 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                     "navigation_instrument": browser_params.navigation_instrument,
                     "dns_instrument": browser_params.dns_instrument,
                 },
+                "save_content_types": browser_params.save_content,
+                "content_store_path": str(content_store_path),
                 "tracker_list_snapshots": [
                     {"name": s.name, "snapshot_date": s.snapshot_date, "pinned_commit": s.pinned_commit}
                     for s in TRACKER_LIST_SNAPSHOTS
@@ -700,7 +750,10 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
         attempts = attempt_counts(visits_path)
         try:
             with TaskManager(
-                manager_params, [browser_params], SQLiteStorageProvider(db_path), None
+                manager_params,
+                [browser_params],
+                SQLiteStorageProvider(db_path),
+                LevelDbProvider(content_store_path),
             ) as manager:
                 for index, item in enumerate(remaining):
                     if time.monotonic() - last_checked_at >= arguments.exit_recheck_seconds:

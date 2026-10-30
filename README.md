@@ -74,6 +74,14 @@ cadence raised to sit within 30 seconds of `--iproyal-lifetime` refuses
 One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
 
 - `crawl-data.sqlite` -- OpenWPM's own primary artifact and the resume ledger.
+- `content-store.leveldb/` -- the unstructured content store, a LevelDB
+  database (LevelDB's own format is a directory, not a single file, hence
+  the directory living beside `crawl-data.sqlite` rather than as a sibling
+  file). Keyed by `content_hash`, which is also the join key into
+  `http_responses.content_hash`: a response's bytes live in this store
+  under the same hash recorded on its row. The store is content-addressed,
+  so a body that recurs verbatim across sites and visits (a CMP vendor's
+  script served from the same CDN, for instance) is written once.
 - `manifest.json` -- written once per cell (`ordering_seed`, `instrument`,
   `schema_version`, each pinned: a later invocation whose own values differ
   raises rather than proceeding against the wrong cell). Reopened to record
@@ -134,6 +142,38 @@ For five seconds after `FinalizeCommand` tears down the tab, records can
 still arrive and get attributed to that `visit_id` with timestamps past
 `boundary_utc + post_dwell_s` (`runs.jsonl`'s `finalize_drain_tail_s`); an
 analysis that truncates strictly at that boundary will silently drop them.
+
+## Response-body capture
+
+`--save-content-types` (also readable from `DV_SAVE_CONTENT_TYPES`) sets
+`BrowserParams.save_content` to a comma-separated subset of OpenWPM's
+resource types, and refuses at argument parsing, before any browser opens,
+if a type in that list is not one OpenWPM recognises. The default is
+`main_frame,sub_frame,script,xmlhttprequest`: `main_frame` is the page
+HTML the CMP-presence probe classifies; `sub_frame` because consent
+platforms commonly render their banner in an iframe, and skipping it would
+systematically miss the thing the probe needs to see; `script` for the
+CMP's own code; `xmlhttprequest` for configuration it fetches after load.
+Images, media, fonts and stylesheets are left out to keep the store
+tractable, and a calibration pass that needs them can widen the set
+without a code change.
+
+A smoke run of 10 visits (5 UK, 5 US, `no_interaction` only) put 1,647
+third-party requests through this join, of which 928 (56%) carry a
+resource type in the default set. Summing the `Content-Length` header on
+those 928 responses gives 14.3 MB, about 1.43 MB per visit; scaled to a
+full sweep (500 sites x 3 arms x 1 replicate = 1,500 visits) that is
+roughly 2.1 GB. Two things pull against that figure in opposite
+directions: about a third of the matched responses carry no
+`Content-Length` at all (chunked or otherwise undeclared), so the header
+sum is a lower bound on true bytes served; and the store is
+content-addressed by `content_hash`; a script served identically across
+many sites (a CMP vendor's bundle, a shared CDN library) is written once,
+not once per site, so the true stored size will be smaller than linear
+scaling implies. Net, a full sweep under the default type set should land
+in the low single-digit gigabytes -- not a capacity concern for local
+disk, but worth watching as the content store actually fills, since
+dedup's effect cannot be sized precisely before that run.
 
 ## Crawl container
 
