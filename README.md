@@ -72,6 +72,16 @@ session could rotate. The defaults leave that margin out of the box; a
 cadence raised to sit within 30 seconds of `--iproyal-lifetime` refuses
 (exit 6) rather than being accepted on the boundary.
 
+That margin is a function of the recheck cadence and the session
+lifetime alone, not of how long the cell runs or how many visits it
+holds, so tripling the visit count under `REPLICATE_COUNT=3` changes
+neither the margin nor what one exit check means for a visit. How many
+visits sit behind a given check is `exit_recheck_seconds / visit_duration`
+(roughly 3-5 at the 60-90s/visit measured figure and the 300s default), a
+ratio that stays fixed as the cell grows; a longer cell just runs more
+checks over more wall-clock time, each still governing the same small,
+constant-sized run of visits that follow it until the next one.
+
 One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
 
 - `crawl-data.sqlite` -- OpenWPM's own primary artifact and the resume ledger.
@@ -98,8 +108,9 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   US arms point at different relays by design, so including it would make
   every cell's fingerprint differ even when the protections are identical.
   The start row also carries which instruments were enabled, the active
-  conditions and their dwells, the finalize drain tail, the sites file and
-  its hash, and other facts that can legitimately differ between a cell's
+  conditions and their dwells, `replicate_count`, the `load_anchor` method
+  and its timeout, the finalize drain tail, the sites file and its hash,
+  and other facts that can legitimately differ between a cell's
   invocations) and an end row (`ended_at_utc`, the exit code, a reason, and
   how many visits were left). Every exit from the crawl itself writes the
   end row, including an unanticipated exception, so a cell that stopped
@@ -113,16 +124,39 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   *before* the page load, not after: a failed get would otherwise leave no
   identity for that visit_id, and resume would re-crawl it on every future
   invocation forever.
+- `loads.jsonl` -- one line per visit from `LoadAnchorCommand`, the
+  command that runs right after the page's `get()` and right before the
+  fixed pre-consent dwell. Records `load_complete_utc` (the instant an
+  explicit poll of `document.readyState` first observed `"complete"`, or
+  the instant its own bound expired, whichever came first),
+  `load_anchor` (`"document_ready"`, the one anchor implemented today),
+  `load_anchor_timed_out` (whether that bound was hit before the page
+  reported complete), `load_wait_s` (that instant minus the preceding
+  `StampVisitCommand` timestamp -- the page-load-time component this
+  design pulls out of the dwell rather than folding into it), and
+  `last_error` (the most recent poll's own exception, if any, so a timed-
+  out row is distinguishable from a page that was simply still loading).
 - `boundaries.jsonl` -- one line per visit recording `boundary_utc`: the
   consent interactor's own reported click instant for a successful
   `reject_all`/`accept_all` decision (`boundary_source: "engine_reported"`),
   or this command's own timestamp otherwise -- `no_interaction`, no banner
   detected, or a failed/timed-out attempt (`boundary_source: "synthetic"`).
   `offset_from_get_start_s` is `boundary_utc` minus the preceding
-  `StampVisitCommand`'s timestamp: `GetCommand`'s own alert probe adds 0.5
-  to 1.5 seconds between the pre-dwell ending and this command running,
-  site-dependently, so the matched-offset comparison the design calls for
-  needs this recorded rather than assumed fixed.
+  `StampVisitCommand`'s timestamp, and still carries load-time and
+  consent-detection-time variance by construction -- it is kept because it
+  is the quantity that first showed the pre-consent window was a different
+  length at every site. `dwell_window_s` is `boundary_utc` minus
+  `loads.jsonl`'s own `load_complete_utc` for the same visit: the quantity
+  the load-completion anchor exists to hold close to `pre_dwell_s` plus a
+  small, site-independent consent-detection remainder, across every site.
+  `load_complete_utc` and `load_anchor_timed_out` are carried through from
+  `loads.jsonl` alongside it, and all three of the new fields are `None`
+  when no matching `loads.jsonl` row exists -- a defensive case kept for a
+  future reordering of the sequence, since today OpenWPM aborts a
+  sequence on any non-`"ok"` command, so `ConsentInteractionCommand` only
+  ever runs once `LoadAnchorCommand` has already run to completion and
+  written its row. An unanchored window stays `None`, not a silently
+  assumed normal one, if that ever stops holding.
 - `interactions.jsonl` -- one line per visit from the same command,
   recording the consent interactor's full outcome: `engine_name`/
   `engine_version`, `banner_present`, `detected_cmps`, `matched_popup_cmp`,
@@ -163,6 +197,45 @@ For five seconds after `FinalizeCommand` tears down the tab, records can
 still arrive and get attributed to that `visit_id` with timestamps past
 `boundary_utc + post_dwell_s` (`runs.jsonl`'s `finalize_drain_tail_s`); an
 analysis that truncates strictly at that boundary will silently drop them.
+The drain tail is unaffected by anything below: it still starts after
+`post_dwell_s`, measured from the consent boundary exactly as before.
+
+## Pre-consent dwell
+
+A visit's sequence is: get the page, confirm and stamp load completion,
+sleep `pre_dwell_s`, run the consent command, sleep `post_dwell_s`. The
+middle two steps used to be one: `GetCommand`'s own internal sleep ran
+immediately after `webdriver.get()` returned, so `pre_dwell_s` meant "load
+time plus the configured number of seconds," and load time measured on a
+ten-site sample varied by a factor of three -- the pre-consent observation
+window was a different length at every site, and on one visit three of a
+site's ten third-party domains (one of them a geolocation lookup, exactly
+the kind of request that fires once a page has settled) were missing
+entirely, present on every other visit of the same site.
+
+`LoadAnchorCommand` now sits between the get and the dwell. It polls
+`document.readyState` explicitly, under its own bound
+(`LOAD_ANCHOR_TIMEOUT_S`, 15 seconds plus a 5-second margin against the
+sequence-level watchdog), and stamps `load_complete_utc` the instant it
+first sees `"complete"` -- or, failing that, the instant its own bound
+expires, with `load_anchor_timed_out: true` so that visit's window reads
+as unanchored rather than as a normal one. The dwell then sleeps
+`pre_dwell_s` from that stamped instant rather than from whenever `get()`
+happened to return. In the ordinary case `get()` has already blocked on
+the same `"complete"` condition (Selenium's default "normal" page-load
+strategy), so the poll resolves on its first check and costs nothing; it
+only matters on the edge case the fix targets, a `TimeoutException`
+`GetCommand` swallows internally that hands control back before the page
+is actually done.
+
+`pre_dwell_s` stays at 10.0 under this change. The number was never the
+problem -- where its clock started was -- so changing it alongside the
+anchor would conflate two different corrections and make neither
+auditable. `boundaries.jsonl`'s `dwell_window_s` (boundary minus
+`load_complete_utc`) is the quantity to check that the fix worked: it
+should sit close to `pre_dwell_s` plus a small, site-independent
+consent-detection remainder, at every site, where `offset_from_get_start_s`
+(kept, unchanged) still would not.
 
 ## Consent interaction
 
@@ -235,19 +308,72 @@ without a code change.
 A smoke run of 10 visits (5 UK, 5 US, `no_interaction` only) put 1,647
 third-party requests through this join, of which 928 (56%) carry a
 resource type in the default set. Summing the `Content-Length` header on
-those 928 responses gives 14.3 MB, about 1.43 MB per visit; scaled to a
-full sweep (500 sites x 3 arms x 1 replicate = 1,500 visits) that is
-roughly 2.1 GB. Two things pull against that figure in opposite
+those 928 responses gives 14.3 MB, about 1.43 MB per visit; at
+`REPLICATE_COUNT=1` that scaled to a full sweep (500 sites x 3 arms x 1
+replicate = 1,500 visits) of roughly 2.1 GB by this header-sum method; see
+the Replicates section below for the current, tripled total under a
+separate, independently-measured per-visit figure (content store, not
+header sum). Two things pull against the header-sum figure in opposite
 directions: about a third of the matched responses carry no
 `Content-Length` at all (chunked or otherwise undeclared), so the header
 sum is a lower bound on true bytes served; and the store is
 content-addressed by `content_hash`; a script served identically across
 many sites (a CMP vendor's bundle, a shared CDN library) is written once,
 not once per site, so the true stored size will be smaller than linear
-scaling implies. Net, a full sweep under the default type set should land
-in the low single-digit gigabytes -- not a capacity concern for local
-disk, but worth watching as the content store actually fills, since
-dedup's effect cannot be sized precisely before that run.
+scaling implies. Dedup's effect cannot be sized precisely before a full
+sweep actually runs.
+
+## Replicates
+
+`REPLICATE_COUNT` is 3: every `(site, condition)` pair is visited three
+times, everywhere, not just where a prior run looked unstable. Three gives
+a median rather than a mean of two, so one blocked or anomalous visit does
+not by itself swing a cell's point estimate, and the per-reason-code counts
+in `exclusion-report.json` can distinguish a persistently blocked arm from
+a transiently blocked one across three independent attempts instead of
+one. Two replicates is the fallback if wall-clock or relay budget forces a
+cheaper sweep; one replicate per cell is no longer the design.
+
+At 60-90 seconds per visit (including the browser relaunch between
+sequences) and the full corpus (500 sites, 3 arms), replicate count scales
+total visits and wall-clock linearly:
+
+| replicate_count | visits | wall-clock             | content store (~5.3MB/visit) |
+|-----------------:|-------:|------------------------|-------------------------------|
+| 1 (previous)     | 1,500  | ~25.0-37.5 hours       | ~8.0 GB                       |
+| 2                | 3,000  | ~50.0-75.0 hours       | ~15.9 GB                      |
+| 3 (current)      | 4,500  | ~75.0-112.5 hours      | ~23.9 GB                      |
+
+The per-visit content-store figure (5.3 MB, ~80% JavaScript bodies) is
+measured over 15 visits and is a different method from the header-sum
+estimate in Response-body capture above; the two should not be added
+together.
+
+`build_work_list` places replicate as the outer loop: the work list is
+`replicate_count` full passes over every `(site, condition)` pair, each
+pass in the same shuffled-site, permuted-block order, rather than a site's
+replicates running back to back inside one pass. Back to back would put
+them a few minutes apart -- inside one relay session's lifetime and before
+any transient server-side state from the first visit has necessarily
+cleared -- which defeats the point of repeating the trial; one full pass
+apart (`len(sites) * len(conditions)` positions, hours apart in practice)
+puts each replicate on, in effect, a different relay session and a cold
+revisit of the site.
+
+The resume predicate needs no change for replicates above 1: identity is
+already `(site_id, condition, replicate)`, so a cell with 2 of 3
+replicates of an arm terminal and one not simply resumes the missing one,
+the same as it already did for arms. `retry_number` and `attempt_counts`
+are keyed the same way and generalise the same way.
+
+The exclusion rule in Blocked-visit detection below needs no change
+either, and that is a deliberate reading, not an oversight: it already
+groups by `site_id` alone, so one blocked replicate out of nine now
+excludes a site exactly as one blocked arm out of three used to. A site
+usable on 8 of 9 attempted visits is still not a site every arm can be
+compared across on equal footing with its neighbours, so the stricter
+whole-site exclusion is the correct extension of the existing rule, not a
+new one.
 
 ## Blocked-visit detection
 
@@ -271,12 +397,13 @@ every visit in one cell against three routes, tried in that order:
    set that excludes `main_frame`) still gets routes 1 and 2; route 3 reports
    `not_assessable` rather than guessing.
 
-A site is usable only if every arm it attempted was served: one blocked arm
-makes the site's contribution to the consent-arm comparison unusable, not
-just that arm, so dropping only the blocked visit is wrong. The rule is a
-pure function over a set of visit verdicts and does not special-case the
-arm count, so it holds unchanged now that all three of `no_interaction`,
-`reject_all`, and `accept_all` are active.
+A site is usable only if every visit it attempted was served: one blocked
+visit makes the site's contribution to the consent-arm comparison
+unusable, not just that visit, so dropping only the blocked one is wrong.
+The rule is a pure function over a set of visit verdicts and does not
+special-case the arm count or the replicate count, so it holds unchanged
+now that all three of `no_interaction`, `reject_all`, and `accept_all` are
+active, and unchanged again at `REPLICATE_COUNT=3` (see Replicates above).
 
 This module imports `plyvel` (the content-store reader only) and therefore
 runs inside the crawl container, same as `openwpm_run.py`:

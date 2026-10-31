@@ -20,6 +20,18 @@ this module's one `CONSENT_INTERACTOR` construction, not touching the
 command. `_crawl_cell` still refuses before opening a browser, rather than
 guessing, if it is ever asked to run a condition whose action the
 configured interactor does not support.
+
+The pre-consent dwell anchors to load completion, not to the start of the
+fetch. `GetCommand.get()` blocks on Selenium's "normal" page-load strategy,
+which resolves on `document.readyState == "complete"`; `LoadAnchorCommand`
+re-polls that same condition explicitly, under its own bound, so the
+anchor instant is measured rather than assumed to coincide with whenever
+`get()` happened to return -- the one case they can differ is a
+`TimeoutException` `GetCommand` swallows internally, which hands control
+back before the page is actually ready. `DwellCommand` then sleeps
+`pre_dwell_s` from that measured instant, so the pre-consent window is the
+same length at every site by construction rather than by a load-time
+correction applied afterward.
 """
 
 from __future__ import annotations
@@ -36,6 +48,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from enum import IntEnum
 from pathlib import Path
+from typing import Any, Protocol
 
 from openwpm.command_sequence import CommandSequence
 from openwpm.commands.browser_commands import FinalizeCommand
@@ -74,7 +87,9 @@ from dv_tracking.egress import (
 from dv_tracking.sites import DVSupportSite
 
 INSTRUMENT: str = "openwpm"
-SCHEMA_VERSION: str = "1"
+# 2, not 1: this cell's own sidecar shape changed (loads.jsonl, three new
+# boundaries.jsonl fields), so a resume against a pre-bump cell must refuse.
+SCHEMA_VERSION: str = "2"
 
 # The interactor this cell drives for consent detection/decision. The one
 # construction below is this module's sole concrete-engine dependency; every
@@ -87,7 +102,9 @@ SCHEMA_VERSION: str = "1"
 CONSENT_INTERACTOR: ConsentInteractor = AutoconsentInteractor()
 SUPPORTED_CONDITION_ACTIONS: frozenset[str] = CONSENT_INTERACTOR.supported_actions
 ACTIVE_CONDITIONS = CONDITIONS
-REPLICATE_COUNT: int = 1
+# 3, not 2: a median of three survives one blocked or anomalous visit; cost
+# is documented in README.md's Replicates section, not restated here.
+REPLICATE_COUNT: int = 3
 # Hard bound on one visit's consent-interaction call; see
 # consent_interaction.ConsentInteractor.run. A banner that never resolves
 # ends the call at this bound, recorded as decision_status="timeout",
@@ -103,6 +120,11 @@ DISPLAY_MODE = "xvfb"
 
 NAVIGATION_TIMEOUT_S: int = 90
 DWELL_TIMEOUT_MARGIN_S: int = 10
+# Bound on LoadAnchorCommand's own readyState poll; get() already blocks on
+# "complete" ordinarily, so this mostly guards a rare swallowed-timeout edge case.
+LOAD_ANCHOR_TIMEOUT_S: float = 15.0
+LOAD_ANCHOR_TIMEOUT_MARGIN_S: float = 5.0
+LOAD_ANCHOR_POLL_INTERVAL_S: float = 0.25
 FINALIZE_COMMAND_NAME: str = FinalizeCommand.__name__
 # FinalizeCommand's own sleep, hardcoded at command_sequence.py:200 of the
 # pinned commit (`FinalizeCommand(sleep=5)`) rather than exposed as an
@@ -274,22 +296,24 @@ def _recheck_margin_is_sufficient(exit_recheck_seconds: int, iproyal_lifetime_s:
     return exit_recheck_seconds <= iproyal_lifetime_s - EXIT_RECHECK_MARGIN_S
 
 
-def _stamped_at_utc(visits_path: Path, visit_id: int) -> str | None:
+def _last_matching_row(path: Path, visit_id: int) -> dict[str, Any] | None:
     """
-    Look up one visit_id's own stamped_at_utc from the sidecar identity log.
+    Look up one visit_id's most recently appended row in a sidecar JSONL log.
 
     Scans from the end: the matching row is always the most recently
-    appended one, written immediately before the get this lookup follows.
+    appended one, written immediately before the command this lookup runs
+    inside of. Shared by every command that reads back an earlier stage's
+    own record for this visit (the get-start stamp, the load-anchor record).
 
     Args:
-        visits_path: The sidecar visit-identity JSONL path.
+        path: The sidecar JSONL path.
         visit_id: The visit_id to find.
     Returns:
-        stamped_at_utc: The stamp instant, or None if no row matched.
+        row: The matching row, decoded, or None if no row matched.
     """
-    if not visits_path.is_file():
+    if not path.is_file():
         return None
-    for line in reversed(visits_path.read_text(encoding="utf-8").splitlines()):
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
         line = line.strip()
         if not line:
             continue
@@ -298,8 +322,14 @@ def _stamped_at_utc(visits_path: Path, visit_id: int) -> str | None:
         except json.JSONDecodeError:
             continue
         if row.get("visit_id") == visit_id:
-            return row.get("stamped_at_utc")
+            return row
     return None
+
+
+def _stamped_at_utc(visits_path: Path, visit_id: int) -> str | None:
+    """Look up one visit_id's own stamped_at_utc from the sidecar identity log."""
+    row = _last_matching_row(visits_path, visit_id)
+    return row.get("stamped_at_utc") if row else None
 
 
 def _exit_check_row(check: ExitCheck, run_id: str) -> dict[str, object]:
@@ -500,6 +530,78 @@ class StampVisitCommand(BaseCommand):
         )
 
 
+class ReadyStateProbe(Protocol):
+    """The one webdriver method `LoadAnchorCommand` depends on, not the full `ScriptRunner` interface."""
+
+    def execute_script(self, script: str) -> object: ...
+
+
+class LoadAnchorCommand(BaseCommand):
+    """Confirm and stamp the load-completion instant the pre-consent dwell anchors to.
+
+    `GetCommand` already blocks on Selenium's "normal" page-load strategy,
+    which resolves when `document.readyState` reaches `"complete"`; this
+    command re-polls the same condition explicitly, under its own bound, so
+    the anchor instant is measured rather than assumed to coincide with
+    whenever `get()` happened to return. The one case where the two differ
+    is a `TimeoutException` `GetCommand` swallows internally (see
+    `browser_commands.GetCommand.execute`), which hands control back
+    before the page is actually ready -- this command's bounded poll closes
+    that gap rather than letting the fixed dwell start on an unfinished
+    load. A page that still has not reached "complete" when the bound
+    expires is recorded `load_anchor_timed_out=True` with the anchor taken
+    at that instant anyway, so the dwell always starts and the visit never
+    hangs; a downstream reader can treat that visit's window as unanchored
+    rather than silently equal-length. `last_error` carries the most
+    recent poll's own exception, if any, so a timed-out row is
+    distinguishable from a genuinely slow page.
+    """
+
+    def __init__(self, *, loads_path: Path, visits_path: Path, timeout_s: float, poll_interval_s: float) -> None:
+        self.loads_path = loads_path
+        self.visits_path = visits_path
+        self.timeout_s = timeout_s
+        self.poll_interval_s = poll_interval_s
+
+    def __repr__(self) -> str:
+        return f"LoadAnchorCommand({self.timeout_s})"
+
+    def execute(self, webdriver: ReadyStateProbe, browser_params, manager_params, extension_socket) -> None:
+        deadline = time.monotonic() + self.timeout_s
+        timed_out = True
+        last_error: str | None = None
+        while True:
+            try:
+                if webdriver.execute_script("return document.readyState") == "complete":
+                    timed_out = False
+                    last_error = None
+                    break
+            except Exception as error:  # noqa: BLE001 -- a script/WebDriver fault must not hang the visit
+                last_error = repr(error)
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(self.poll_interval_s)
+
+        load_complete_utc = utcnow_iso()
+        stamped_at = _stamped_at_utc(self.visits_path, self.visit_id)
+        load_wait_s = (
+            (datetime.fromisoformat(load_complete_utc) - datetime.fromisoformat(stamped_at)).total_seconds()
+            if stamped_at is not None
+            else None
+        )
+        _append_jsonl(
+            self.loads_path,
+            {
+                "visit_id": self.visit_id,
+                "load_complete_utc": load_complete_utc,
+                "load_anchor": "document_ready",
+                "load_anchor_timed_out": timed_out,
+                "load_wait_s": load_wait_s,
+                "last_error": last_error,
+            },
+        )
+
+
 class ConsentInteractionCommand(BaseCommand):
     """Detect a consent banner and, for an active consent arm, apply its decision.
 
@@ -510,10 +612,12 @@ class ConsentInteractionCommand(BaseCommand):
     engine-reported instant of a successful decision when there is one,
     and this command's own timestamp -- a synthetic marker at the
     equivalent point in the sequence -- otherwise (no decision requested,
-    no banner, or a failed/timed-out attempt). `GetCommand`'s own alert
-    probe (up to 0.5s, plus a further 1s when a modal is present) sits
-    between the pre-dwell ending and this command running, so the offset
-    from the preceding stamp is recorded rather than assumed fixed.
+    no banner, or a failed/timed-out attempt). `offset_from_get_start_s`
+    (boundary minus the get-start stamp) still carries load-time and
+    detection-time variance by construction; `dwell_window_s` (boundary
+    minus `LoadAnchorCommand`'s own `load_complete_utc`) is the quantity
+    the load-completion anchor was built to hold equal across sites --
+    both are recorded so the fix's effect is visible rather than assumed.
     """
 
     def __init__(
@@ -525,6 +629,7 @@ class ConsentInteractionCommand(BaseCommand):
         boundaries_path: Path,
         interactions_path: Path,
         visits_path: Path,
+        loads_path: Path,
     ) -> None:
         self.interactor = interactor
         self.action = action
@@ -532,6 +637,7 @@ class ConsentInteractionCommand(BaseCommand):
         self.boundaries_path = boundaries_path
         self.interactions_path = interactions_path
         self.visits_path = visits_path
+        self.loads_path = loads_path
 
     def __repr__(self) -> str:
         return f"ConsentInteractionCommand({self.action})"
@@ -539,12 +645,24 @@ class ConsentInteractionCommand(BaseCommand):
     def execute(self, webdriver: ScriptRunner, browser_params, manager_params, extension_socket) -> None:
         result: ConsentInteractionResult = self.interactor.run(webdriver, self.action, self.timeout_s)
         boundary_utc = result.clicked_at_utc or utcnow_iso()
+        boundary_instant = datetime.fromisoformat(boundary_utc)
+
         stamped_at = _stamped_at_utc(self.visits_path, self.visit_id)
         offset_from_get_start_s = (
-            (datetime.fromisoformat(boundary_utc) - datetime.fromisoformat(stamped_at)).total_seconds()
+            (boundary_instant - datetime.fromisoformat(stamped_at)).total_seconds()
             if stamped_at is not None
             else None
         )
+
+        load_row = _last_matching_row(self.loads_path, self.visit_id)
+        load_complete_utc = load_row.get("load_complete_utc") if load_row else None
+        load_anchor_timed_out = load_row.get("load_anchor_timed_out") if load_row else None
+        dwell_window_s = (
+            (boundary_instant - datetime.fromisoformat(load_complete_utc)).total_seconds()
+            if load_complete_utc is not None
+            else None
+        )
+
         _append_jsonl(
             self.boundaries_path,
             {
@@ -552,13 +670,16 @@ class ConsentInteractionCommand(BaseCommand):
                 "boundary_utc": boundary_utc,
                 "offset_from_get_start_s": offset_from_get_start_s,
                 "boundary_source": "engine_reported" if result.clicked_at_utc else "synthetic",
+                "load_complete_utc": load_complete_utc,
+                "load_anchor_timed_out": load_anchor_timed_out,
+                "dwell_window_s": dwell_window_s,
             },
         )
         _append_jsonl(self.interactions_path, {"visit_id": self.visit_id, **result.to_json()})
 
 
 class DwellCommand(BaseCommand):
-    """Sleep without navigating, for the post-boundary dwell window."""
+    """Sleep without navigating, for the pre- or post-boundary dwell window."""
 
     def __init__(self, *, seconds: float) -> None:
         self.seconds = seconds
@@ -614,6 +735,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
     content_store_path = cell_dir / CONTENT_STORE_DIRNAME
     manifest_path = cell_dir / "manifest.json"
     visits_path = cell_dir / "visits.jsonl"
+    loads_path = cell_dir / "loads.jsonl"
     boundaries_path = cell_dir / "boundaries.jsonl"
     interactions_path = cell_dir / "interactions.jsonl"
     exit_checks_path = cell_dir / "exit-checks.jsonl"
@@ -771,6 +893,11 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                 ],
                 "replicate_count": REPLICATE_COUNT,
                 "navigation_timeout_s": NAVIGATION_TIMEOUT_S,
+                "load_anchor": {
+                    "method": "document_ready",
+                    "timeout_s": LOAD_ANCHOR_TIMEOUT_S,
+                    "poll_interval_s": LOAD_ANCHOR_POLL_INTERVAL_S,
+                },
                 "finalize_drain_tail_s": FINALIZE_DRAIN_TAIL_S,
                 "exit_recheck_seconds": arguments.exit_recheck_seconds,
                 "iproyal_lifetime_s": arguments.iproyal_lifetime,
@@ -847,9 +974,21 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                             checked_at_utc=checked_at_utc,
                         )
                     )
-                    sequence.get(
-                        sleep=item.condition.pre_dwell_s,
-                        timeout=NAVIGATION_TIMEOUT_S + int(item.condition.pre_dwell_s),
+                    # sleep=0: the pre-dwell runs as its own DwellCommand,
+                    # anchored to LoadAnchorCommand's measured instant.
+                    sequence.get(sleep=0, timeout=NAVIGATION_TIMEOUT_S)
+                    sequence.append_command(
+                        LoadAnchorCommand(
+                            loads_path=loads_path,
+                            visits_path=visits_path,
+                            timeout_s=LOAD_ANCHOR_TIMEOUT_S,
+                            poll_interval_s=LOAD_ANCHOR_POLL_INTERVAL_S,
+                        ),
+                        timeout=int(LOAD_ANCHOR_TIMEOUT_S + LOAD_ANCHOR_TIMEOUT_MARGIN_S),
+                    )
+                    sequence.append_command(
+                        DwellCommand(seconds=item.condition.pre_dwell_s),
+                        timeout=int(item.condition.pre_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
                     )
                     sequence.append_command(
                         ConsentInteractionCommand(
@@ -859,6 +998,7 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                             boundaries_path=boundaries_path,
                             interactions_path=interactions_path,
                             visits_path=visits_path,
+                            loads_path=loads_path,
                         ),
                         timeout=int(CONSENT_INTERACTION_TIMEOUT_S) + CONSENT_INTERACTION_TIMEOUT_MARGIN_S,
                     )

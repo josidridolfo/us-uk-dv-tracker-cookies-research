@@ -50,11 +50,22 @@ def build_work_list(
     """
     Build the (site, condition, replicate) work list in seeded, permuted-block order.
 
-    Sites are shuffled by the seed. Arm order is assigned from one of
+    Sites are shuffled once by the seed. Arm order is assigned from one of
     `len(conditions)!` permuted blocks, indexed by each site's shuffled
     position modulo that count -- permuted blocks rather than a per-site
     random draw, so every order is realised an equal (or off-by-one) number
     of times instead of merely in expectation.
+
+    Replicate is the outer loop: the list is `replicate_count` full passes
+    over every (site, condition) pair, each pass in the same shuffled-site,
+    permuted-block order. A replicate-inner loop would place a site's N
+    replicates of one arm back to back, a few minutes apart at most --
+    inside one relay session's lifetime and before any transient
+    server-side state from the first visit has necessarily cleared -- which
+    defeats the point of repeating the trial. Replicate-outer separates
+    same-(site, condition) visits by one full pass
+    (`len(sites) * len(conditions)` positions), onto what is, in practice,
+    a different relay session and a cold revisit of the site.
 
     Args:
         sites: The sites to crawl, already filtered to one geolocation.
@@ -69,10 +80,10 @@ def build_work_list(
     blocks = list(itertools.permutations(conditions))
     work_list: list[WorkItem] = []
     position = 0
-    for site_position, site in enumerate(ordered_sites):
-        order = blocks[site_position % len(blocks)]
-        for arm_position, condition in enumerate(order):
-            for replicate in range(1, replicate_count + 1):
+    for replicate in range(1, replicate_count + 1):
+        for site_position, site in enumerate(ordered_sites):
+            order = blocks[site_position % len(blocks)]
+            for arm_position, condition in enumerate(order):
                 work_list.append(
                     WorkItem(
                         site=site,
