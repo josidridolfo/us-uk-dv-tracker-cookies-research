@@ -173,8 +173,9 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   ever runs once `LoadAnchorCommand` has already run to completion and
   written its row. An unanchored window stays `None`, not a silently
   assumed normal one, if that ever stops holding.
-- `interactions.jsonl` -- one line per visit from the same command,
-  recording the consent interactor's full outcome: `engine_name`/
+- `interactions.jsonl` -- one line per visit from the same command
+  (`"record_type": "decision"`), recording the consent interactor's full
+  outcome: `engine_name`/
   `engine_version`, `banner_present`, `detected_cmps`, `matched_popup_cmp`,
   `action_requested`, `decision_status` (`not_attempted` for
   `no_interaction`; `no_banner`, `applied`, `failed`, or `timeout` for
@@ -185,7 +186,13 @@ One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
   distinguishable from one where a decision silently did nothing.
   `instrument_error` is kept apart from `failed`: the latter means the
   engine ran and reported its own decision unsuccessful, the former means
-  the harness never got a real result to read.
+  the harness never got a real result to read. The same file also carries
+  one `"record_type": "screenshot"` row per capture, from
+  `ConsentScreenshotCommand` -- see Consent screenshots below.
+- `screenshots/` -- OpenWPM's own directory (`TaskManager` always points
+  `ManagerParams.screenshot_path` at `<data_directory>/screenshots` and
+  creates it, whether or not anything writes there); see Consent
+  screenshots below for what it holds and how its files are named.
 - `block-verdicts.jsonl` and `exclusion-report.json` -- written by the
   blocked-visit detection pass below, not by the crawl itself; absent until
   that pass has run against the cell at least once.
@@ -305,6 +312,87 @@ stay in place as an independent presence detector consumed by
 `dv_tracking.classify.banner`, not as the decision engine; two detectors
 disagreeing on the same page is calibration evidence, not something this
 command reconciles.
+
+## Consent screenshots
+
+`interactions.jsonl`'s `decision_status` is the engine's own report of
+what it did; on a handful of pilot sites a site's own consent cookie
+corroborates it independently -- Wix's `consent-policy` cookie reads
+`func/anl/adv` at 0 under `reject_all` and 1 under `accept_all`, and a
+WordPress consent plugin's five `wp_consent_*` cookies read `deny` then
+`allow` -- but on others, Termly and HubSpot among them, no comparably
+readable record exists and `decision_status` is the only evidence there
+is. `ConsentScreenshotCommand` gives a human a way to check that evidence
+against what was actually on screen.
+
+Two viewport screenshots bracket `ConsentInteractionCommand`, for every
+condition including `no_interaction`: one with `stage="pre"`, run after
+the fixed pre-consent dwell and before the decision call, showing the
+banner as the engine saw it; one with `stage="post"`, run right after the
+decision, showing whether it actually cleared. Running both in every arm,
+not only `reject_all`/`accept_all`, keeps the arms comparable and gives a
+`no_interaction` baseline image of every banner nobody clicked -- what a
+human validates the engine's own detection against.
+
+Viewport, not full page: OpenWPM's `ScreenshotFullPageCommand` scrolls to
+the bottom of the page, in increments of `window.innerHeight`, to stitch a
+full-page image. Scrolling triggers viewport-based lazy loading, which
+would inflate the pre-consent request count the study measures, and in
+the `no_interaction` arm a scroll can itself read as implied consent to a
+page listening for one. A banner is a viewport-fixed overlay in any case,
+so a viewport capture is where it is, and a full-page capture would show
+page content instead.
+
+`ConsentScreenshotCommand` calls `webdriver.save_screenshot` directly
+rather than going through OpenWPM's own `SaveScreenshotCommand`: that
+command lets a WebDriver fault raise, and BrowserManager breaks out of an
+entire command sequence on any non-"ok" command, so a capture fault there
+would cost the whole visit over a missing image. Every exception here is
+caught and written to `interactions.jsonl` as a `"record_type":
+"screenshot"` row with `ok=false` and the error text, `path=null`, instead
+-- a visit whose screenshot failed is distinguishable from one a
+pre-screenshot cell never attempted it on, and from one that succeeded.
+
+Filenames follow OpenWPM's own `SaveScreenshotCommand` naming convention
+(`<visit_id>-<md5 of current_url><suffix>.png`), with `suffix` set to
+`<condition>-r<replicate>-<stage>` (e.g.
+`142-3a7f2b8e1c9d4f5a6b7c8d9e0f1a2b3c-reject_all-r2-pre.png`) so arm,
+replicate, and stage are readable from the filename alone, without a
+`visits.jsonl` join, the way a human scanning nine images per site per
+capture point (`REPLICATE_COUNT=3` x 3 arms) needs. They land in
+`screenshots/`, the directory `TaskManager` already points
+`ManagerParams.screenshot_path` at and creates for every cell, whether or
+not anything used to write there.
+
+The `stage="pre"` capture's own latency runs between the fixed
+pre-consent dwell and the call that stamps `boundary_utc`, so it adds
+directly to `boundaries.jsonl`'s `dwell_window_s` for that visit -- the
+same quantity the load-completion anchor (see Pre-consent dwell above)
+exists to hold equal across sites. No placement between the load anchor
+and the decision avoids this without moving the dwell anchor itself,
+which is out of scope here, and a placement outside that interval would
+either capture a page not yet settled or miss the banner the capture
+exists to show. Measured against a Chromium/Playwright page (not the
+crawl's own Firefox/geckodriver stack -- geckodriver was not available to
+measure locally, so this is an order-of-magnitude proxy, not the real
+number) at the crawl's own 1366x768 window size, five real, non-corpus
+pages gave a single viewport capture in 26-184ms, against a 10-second
+`pre_dwell_s`: the same order of magnitude as the "small,
+site-independent consent-detection remainder" `dwell_window_s` already
+tolerates by design. The addition is recorded, not estimated:
+`ConsentScreenshotCommand` writes its own `duration_s` per capture, so it
+can be read back and, if it ever matters, subtracted out rather than
+staying an invisible constant.
+
+Per-image size is likewise measured against that same proxy, not
+estimated: the five pages above produced PNGs of 74-191 KiB, mean about
+101 KiB. At `REPLICATE_COUNT=3` and the full corpus (500 sites x 3 arms x
+3 replicates = 4,500 visits, two captures each), 9,000 images at that
+mean scale to roughly 0.9 GB -- additive to, not replacing, the
+content-store figures in Replicates below. A real Firefox/geckodriver
+capture may differ in size or cost from this proxy; the figures above are
+what was actually measured, not a substitute for measuring the real
+stack once a crawl runs.
 
 ## Response-body capture
 

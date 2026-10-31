@@ -32,6 +32,27 @@ back before the page is actually ready. `DwellCommand` then sleeps
 `pre_dwell_s` from that measured instant, so the pre-consent window is the
 same length at every site by construction rather than by a load-time
 correction applied afterward.
+
+Two viewport screenshots bracket `ConsentInteractionCommand` in every arm,
+including `no_interaction`: one before the decision, one after.
+`ConsentScreenshotCommand` calls `webdriver.save_screenshot` directly
+rather than using OpenWPM's own `SaveScreenshotCommand` -- a WebDriver
+fault there would raise and abort the whole command sequence, since
+BrowserManager breaks out of a sequence on any non-"ok" command, costing
+the visit over a missing image. This command catches that fault instead
+and records it. OpenWPM's `ScreenshotFullPageCommand` is never used
+pre-consent: it scrolls the page to stitch a full-page image, and
+scrolling triggers viewport-based lazy loading and can itself read as
+implied consent in the no-interaction arm. A viewport capture is also
+what shows a banner, which is fixed to the viewport, not the page.
+The pre-decision capture's own latency lands inside `boundaries.jsonl`'s
+`dwell_window_s` for that visit, because it runs between the fixed
+pre-consent dwell and the decision call that stamps `boundary_utc`; no
+placement between the load anchor and that call avoids this without
+moving the dwell anchor itself, which is out of scope here. The capture
+is measured at well under a second against a non-production proxy (see
+README.md's Consent screenshots section) and is recorded per visit as
+`duration_s`, so the addition is visible rather than silently absorbed.
 """
 
 from __future__ import annotations
@@ -48,7 +69,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from openwpm.command_sequence import CommandSequence
 from openwpm.commands.browser_commands import FinalizeCommand
@@ -69,6 +90,7 @@ from dv_tracking.crawl.consent_interaction import (
     ScriptRunner,
 )
 from dv_tracking.crawl.resume import (
+    WorkItem,
     attempt_counts,
     build_work_list,
     done_work_items,
@@ -87,9 +109,10 @@ from dv_tracking.egress import (
 from dv_tracking.sites import DVSupportSite
 
 INSTRUMENT: str = "openwpm"
-# 2, not 1: this cell's own sidecar shape changed (loads.jsonl, three new
-# boundaries.jsonl fields), so a resume against a pre-bump cell must refuse.
-SCHEMA_VERSION: str = "2"
+# 3, not 2: this cell's own sidecar shape changed again (interactions.jsonl
+# gains "screenshot" rows and screenshots/ is now populated), so a resume
+# against a pre-bump cell must refuse rather than mix conventions.
+SCHEMA_VERSION: str = "3"
 
 # The interactor this cell drives for consent detection/decision. The one
 # construction below is this module's sole concrete-engine dependency; every
@@ -111,6 +134,12 @@ REPLICATE_COUNT: int = 3
 # rather than hanging the visit.
 CONSENT_INTERACTION_TIMEOUT_S: float = 20.0
 CONSENT_INTERACTION_TIMEOUT_MARGIN_S: int = 10
+
+# A single viewport capture measured at 26-184ms against a Chromium/Playwright
+# proxy (not the crawl's own Firefox/geckodriver stack; see README.md's Consent
+# screenshots section), so this bound is generous rather than tuned to a
+# measured worst case against the real browser.
+SCREENSHOT_TIMEOUT_S: int = 15
 
 # xvfb, not headless: headless has no WebGL (a tracker signal and a bot
 # signal) and its computed style/layout differ, which is what Consent-O-
@@ -675,7 +704,85 @@ class ConsentInteractionCommand(BaseCommand):
                 "dwell_window_s": dwell_window_s,
             },
         )
-        _append_jsonl(self.interactions_path, {"visit_id": self.visit_id, **result.to_json()})
+        _append_jsonl(
+            self.interactions_path,
+            {"visit_id": self.visit_id, "record_type": "decision", **result.to_json()},
+        )
+
+
+class ScreenshotWebDriver(Protocol):
+    """The subset of a Selenium webdriver `ConsentScreenshotCommand` depends on."""
+
+    @property
+    def current_url(self) -> str: ...
+    def save_screenshot(self, filename: str) -> bool: ...
+
+
+class ConsentScreenshotCommand(BaseCommand):
+    """Capture a viewport screenshot and record the attempt, never raising.
+
+    Two instances bracket `ConsentInteractionCommand` in every arm: one
+    with `stage="pre"`, recording the banner as the engine saw it before
+    any decision; one with `stage="post"`, recording whether the decision
+    actually cleared it. Filenames follow OpenWPM's own
+    `SaveScreenshotCommand` convention (`<visit_id>-<md5 of
+    current_url><suffix>.png`), with `suffix` carrying `condition`,
+    `replicate`, and `stage` so a human can tell captures apart by
+    filename alone, without a `visits.jsonl` join.
+
+    Calls `webdriver.save_screenshot` directly rather than going through
+    `SaveScreenshotCommand`: that command lets a WebDriver fault raise,
+    and BrowserManager breaks out of a whole command sequence on any
+    non-"ok" command, costing the visit over a missing image. Every
+    exception here is caught and written to `interactions.jsonl` as
+    `ok=False` instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        stage: Literal["pre", "post"],
+        condition: str,
+        replicate: int,
+        interactions_path: Path,
+    ) -> None:
+        self.stage = stage
+        self.condition = condition
+        self.replicate = replicate
+        self.interactions_path = interactions_path
+
+    def __repr__(self) -> str:
+        return f"ConsentScreenshotCommand({self.stage})"
+
+    def execute(self, webdriver: ScreenshotWebDriver, browser_params, manager_params, extension_socket) -> None:
+        suffix = f"{self.condition}-r{self.replicate}-{self.stage}"
+        start = time.monotonic()
+        path: str | None = None
+        error: str | None = None
+        try:
+            urlhash = hashlib.md5(webdriver.current_url.encode("utf-8")).hexdigest()
+            # screenshot_path is guaranteed to exist by the time any command
+            # runs: TaskManager creates it in its own __init__, before the
+            # context manager this command always runs inside of ever yields
+            # (pinned source task_manager.py:80-90).
+            candidate = Path(manager_params.screenshot_path) / f"{self.visit_id}-{urlhash}-{suffix}.png"
+            webdriver.save_screenshot(str(candidate))
+            path = str(candidate)
+        except Exception as exc:  # noqa: BLE001 -- a capture fault must not cost the visit
+            error = repr(exc)
+        _append_jsonl(
+            self.interactions_path,
+            {
+                "visit_id": self.visit_id,
+                "record_type": "screenshot",
+                "stage": self.stage,
+                "captured_at_utc": utcnow_iso(),
+                "duration_s": time.monotonic() - start,
+                "ok": error is None,
+                "path": path,
+                "error": error,
+            },
+        )
 
 
 class DwellCommand(BaseCommand):
@@ -726,6 +833,100 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         default=os.environ.get("DV_SAVE_CONTENT_TYPES", DEFAULT_SAVE_CONTENT_TYPES),
     )
     return parser.parse_args(argv)
+
+
+def _build_visit_sequence(
+    item: WorkItem,
+    *,
+    geolocation: str,
+    retry_number: int,
+    run_id: str,
+    checked_at_utc: str,
+    visits_path: Path,
+    loads_path: Path,
+    boundaries_path: Path,
+    interactions_path: Path,
+) -> CommandSequence:
+    """Build one visit's command sequence, in execution order.
+
+    Stamp, get, confirm load completion, the pre-consent dwell, a
+    screenshot before the consent decision, the decision itself, a
+    screenshot after it, then the post-consent dwell. The two
+    `ConsentScreenshotCommand` calls run for every condition, with no
+    branch on `item.condition.action`, so the three arms stay comparable
+    on what was captured, the same way they already are on what ran.
+    """
+    sequence = CommandSequence(
+        item.site.url,
+        reset=True,
+        retry_number=retry_number,
+        callback=lambda ok, site_id=item.site.site_id: print(
+            f"[{geolocation}] {site_id}: {'ok' if ok else 'failed'}"
+        ),
+    )
+    sequence.append_command(
+        StampVisitCommand(
+            visits_path=visits_path,
+            site_id=item.site.site_id,
+            condition=item.condition.name,
+            replicate=item.replicate,
+            arm_position=item.arm_position,
+            work_list_position=item.position,
+            run_id=run_id,
+            checked_at_utc=checked_at_utc,
+        )
+    )
+    # sleep=0: the pre-dwell runs as its own DwellCommand, anchored to
+    # LoadAnchorCommand's measured instant.
+    sequence.get(sleep=0, timeout=NAVIGATION_TIMEOUT_S)
+    sequence.append_command(
+        LoadAnchorCommand(
+            loads_path=loads_path,
+            visits_path=visits_path,
+            timeout_s=LOAD_ANCHOR_TIMEOUT_S,
+            poll_interval_s=LOAD_ANCHOR_POLL_INTERVAL_S,
+        ),
+        timeout=int(LOAD_ANCHOR_TIMEOUT_S + LOAD_ANCHOR_TIMEOUT_MARGIN_S),
+    )
+    sequence.append_command(
+        DwellCommand(seconds=item.condition.pre_dwell_s),
+        timeout=int(item.condition.pre_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
+    )
+    sequence.append_command(
+        ConsentScreenshotCommand(
+            stage="pre",
+            condition=item.condition.name,
+            replicate=item.replicate,
+            interactions_path=interactions_path,
+        ),
+        timeout=SCREENSHOT_TIMEOUT_S,
+    )
+    sequence.append_command(
+        ConsentInteractionCommand(
+            interactor=CONSENT_INTERACTOR,
+            action=item.condition.action,
+            timeout_s=CONSENT_INTERACTION_TIMEOUT_S,
+            boundaries_path=boundaries_path,
+            interactions_path=interactions_path,
+            visits_path=visits_path,
+            loads_path=loads_path,
+        ),
+        timeout=int(CONSENT_INTERACTION_TIMEOUT_S) + CONSENT_INTERACTION_TIMEOUT_MARGIN_S,
+    )
+    sequence.append_command(
+        ConsentScreenshotCommand(
+            stage="post",
+            condition=item.condition.name,
+            replicate=item.replicate,
+            interactions_path=interactions_path,
+        ),
+        timeout=SCREENSHOT_TIMEOUT_S,
+    )
+    sequence.append_command(
+        DwellCommand(seconds=item.condition.post_dwell_s),
+        timeout=int(item.condition.post_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
+    )
+    return sequence
 
 
 def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
@@ -899,6 +1100,11 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                     "poll_interval_s": LOAD_ANCHOR_POLL_INTERVAL_S,
                 },
                 "finalize_drain_tail_s": FINALIZE_DRAIN_TAIL_S,
+                "screenshot_timeout_s": SCREENSHOT_TIMEOUT_S,
+                # Re-derives TaskManager's own data_directory/"screenshots" (pinned
+                # source task_manager.py:80) rather than reading it back off
+                # manager_params, which is not yet constructed at this point in _run.
+                "screenshot_path": str(cell_dir / "screenshots"),
                 "exit_recheck_seconds": arguments.exit_recheck_seconds,
                 "iproyal_lifetime_s": arguments.iproyal_lifetime,
                 "failure_limit": FAILURE_LIMIT,
@@ -954,57 +1160,16 @@ def _crawl_cell(arguments: argparse.Namespace, cell_dir: Path) -> ExitCode:
                         last_checked_at = time.monotonic()
 
                     key = (item.site.site_id, item.condition.name, item.replicate)
-                    sequence = CommandSequence(
-                        item.site.url,
-                        reset=True,
+                    sequence = _build_visit_sequence(
+                        item,
+                        geolocation=geolocation,
                         retry_number=attempts.get(key, 0) + 1,
-                        callback=lambda ok, site_id=item.site.site_id: print(
-                            f"[{geolocation}] {site_id}: {'ok' if ok else 'failed'}"
-                        ),
-                    )
-                    sequence.append_command(
-                        StampVisitCommand(
-                            visits_path=visits_path,
-                            site_id=item.site.site_id,
-                            condition=item.condition.name,
-                            replicate=item.replicate,
-                            arm_position=item.arm_position,
-                            work_list_position=item.position,
-                            run_id=run_id,
-                            checked_at_utc=checked_at_utc,
-                        )
-                    )
-                    # sleep=0: the pre-dwell runs as its own DwellCommand,
-                    # anchored to LoadAnchorCommand's measured instant.
-                    sequence.get(sleep=0, timeout=NAVIGATION_TIMEOUT_S)
-                    sequence.append_command(
-                        LoadAnchorCommand(
-                            loads_path=loads_path,
-                            visits_path=visits_path,
-                            timeout_s=LOAD_ANCHOR_TIMEOUT_S,
-                            poll_interval_s=LOAD_ANCHOR_POLL_INTERVAL_S,
-                        ),
-                        timeout=int(LOAD_ANCHOR_TIMEOUT_S + LOAD_ANCHOR_TIMEOUT_MARGIN_S),
-                    )
-                    sequence.append_command(
-                        DwellCommand(seconds=item.condition.pre_dwell_s),
-                        timeout=int(item.condition.pre_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
-                    )
-                    sequence.append_command(
-                        ConsentInteractionCommand(
-                            interactor=CONSENT_INTERACTOR,
-                            action=item.condition.action,
-                            timeout_s=CONSENT_INTERACTION_TIMEOUT_S,
-                            boundaries_path=boundaries_path,
-                            interactions_path=interactions_path,
-                            visits_path=visits_path,
-                            loads_path=loads_path,
-                        ),
-                        timeout=int(CONSENT_INTERACTION_TIMEOUT_S) + CONSENT_INTERACTION_TIMEOUT_MARGIN_S,
-                    )
-                    sequence.append_command(
-                        DwellCommand(seconds=item.condition.post_dwell_s),
-                        timeout=int(item.condition.post_dwell_s) + DWELL_TIMEOUT_MARGIN_S,
+                        run_id=run_id,
+                        checked_at_utc=checked_at_utc,
+                        visits_path=visits_path,
+                        loads_path=loads_path,
+                        boundaries_path=boundaries_path,
+                        interactions_path=interactions_path,
                     )
                     manager.execute_command_sequence(sequence)
         except CommandExecutionError as error:
