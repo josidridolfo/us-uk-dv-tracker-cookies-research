@@ -85,14 +85,30 @@ constant-sized run of visits that follow it until the next one.
 One cell is `data/raw/<crawl_date>_<geolocation>/openwpm/`, holding:
 
 - `crawl-data.sqlite` -- OpenWPM's own primary artifact and the resume ledger.
-- `content-store.leveldb/` -- the unstructured content store, a LevelDB
-  database (LevelDB's own format is a directory, not a single file, hence
-  the directory living beside `crawl-data.sqlite` rather than as a sibling
-  file). Keyed by `content_hash`, which is also the join key into
-  `http_responses.content_hash`: a response's bytes live in this store
-  under the same hash recorded on its row. The store is content-addressed,
-  so a body that recurs verbatim across sites and visits (a CMP vendor's
-  script served from the same CDN, for instance) is written once.
+- `content-store.leveldb/` -- OpenWPM's own unstructured content store, a
+  LevelDB database (LevelDB's own format is a directory, not a single
+  file, hence the directory living beside `crawl-data.sqlite` rather than
+  as a sibling file) that this project never opens for writing. Keyed by
+  `content_hash`, the same value recorded on the `http_responses` row --
+  but that key is *not* the sha256 of the stored bytes. It is the sha256
+  of only the first chunk the browser extension streamed for that
+  response (`Extension/src/lib/response-body-listener.ts`'s
+  `resolveContentHash`, a promise resolver that only the first `ondata`
+  call ever settles). Chunk boundaries are a function of network timing,
+  not of the body, so the exact same bytes fetched twice can register
+  under two different keys and get written to this store twice. On the
+  one archived cell measured so far, 583 keys held only 424 distinct
+  bodies -- 159 duplicates, 42% of the store's 60.2 MB.
+- `content-store-dedup.leveldb/` -- written by
+  `dv_tracking.crawl.compact_content_store`, a separate post-crawl pass,
+  not by the crawl itself; absent until that pass has run against the
+  cell. A body lives once, under its own real sha256 (`body:<digest>`),
+  and `hash:<content_hash>` maps to the digest that resolves it. See
+  Content-store compaction below.
+- `content-store-compaction.json` -- written alongside it: the blob and
+  byte counts before and after, duplicates removed, and the result of the
+  pass's own losslessness check, so a compacted cell carries the proof
+  rather than asking a reader to trust it. Absent until compaction has run.
 - `manifest.json` -- written once per cell (`ordering_seed`, `instrument`,
   `schema_version`, each pinned: a later invocation whose own values differ
   raises rather than proceeding against the wrong cell). Reopened to record
@@ -313,15 +329,77 @@ those 928 responses gives 14.3 MB, about 1.43 MB per visit; at
 replicate = 1,500 visits) of roughly 2.1 GB by this header-sum method; see
 the Replicates section below for the current, tripled total under a
 separate, independently-measured per-visit figure (content store, not
-header sum). Two things pull against the header-sum figure in opposite
-directions: about a third of the matched responses carry no
-`Content-Length` at all (chunked or otherwise undeclared), so the header
-sum is a lower bound on true bytes served; and the store is
-content-addressed by `content_hash`; a script served identically across
-many sites (a CMP vendor's bundle, a shared CDN library) is written once,
-not once per site, so the true stored size will be smaller than linear
-scaling implies. Dedup's effect cannot be sized precisely before a full
-sweep actually runs.
+header sum). The header-sum figure is a lower bound on true bytes served
+on its own terms -- about a third of the matched responses carry no
+`Content-Length` at all (chunked or otherwise undeclared) -- but it is
+not a lower bound on what `content-store.leveldb` holds on disk: that
+store is keyed by `content_hash`, which identifies a response, not a
+body (see Content-store compaction below), so a script served
+identically across many sites is written once per `content_hash` it
+happened to land under, not once overall. The one archived cell measured
+so far held 42% more bytes than its distinct bodies required before
+compaction.
+
+## Content-store compaction
+
+`http_responses.content_hash` is OpenWPM's own identifier for a response,
+not a hash of its body. `Extension/src/lib/response-body-listener.ts`
+hashes only the first chunk `filterResponseData` hands its `ondata`
+listener (`resolveContentHash` is a promise resolver; later chunks never
+reach it), while the full body keeps accumulating underneath,
+unaffected, into what actually gets sent and stored. Chunk boundaries are
+a function of network timing, not of the body, so the same bytes fetched
+twice can land under two different keys, and
+`LevelDbProvider.store_blob` -- keyed on that value, not on the bytes it
+is given -- writes the same body twice.
+
+`dv_tracking.crawl.compact_content_store` is a post-crawl pass that
+removes that duplication without touching the crawl's own output. It
+never opens `content-store.leveldb` for writing; it reads every key in
+it and writes a sibling, `content-store-dedup.leveldb`, where a body
+lives once under `body:<its own real sha256>` and `hash:<content_hash>`
+maps to the digest that resolves it. The sibling is what a disk-saving
+pass is allowed to risk -- the original is the only real capture this
+project holds, and is never replaced, deleted, or deduplicated in place.
+
+Before it reports success, the pass checks its own result rather than
+assuming it: that the set of distinct body digests after compaction is
+exactly the set the original bytes hash to, and that every
+`content_hash` in `http_responses` resolves, through the sibling store,
+to the exact bytes it resolved to before. Either check failing raises
+and no `content-store-compaction.json` is written, so a compacted cell
+without that sidecar is one the pass did not vouch for, not one that
+silently has the wrong bytes behind some key. Running the pass again is
+safe and reports `nothing_to_do: true`: a key already present with the
+right bytes is never rewritten.
+
+```bash
+docker run --rm --platform linux/amd64 \
+    -v "$(pwd)/src:/opt/dv-tracking/src" -v "$(pwd)/data:/data" \
+    -e PYTHONPATH=/opt/OpenWPM:/opt/dv-tracking/src \
+    dv-crawl-crawl:latest python -m dv_tracking.crawl.compact_content_store \
+    /data/raw/<crawl_date>_<geolocation>/openwpm
+```
+
+Measured on `data/raw/_archive/2026-10-30_uk_3arm_settle-timeout/openwpm`
+(copied to a scratch directory for the run; the archived cell itself was
+never opened for writing): 583 keys held 424 distinct bodies -- 60.22 MB
+collapsing to 34.84 MB, 159 duplicates removed, 25.38 MB (42%) saved --
+and all 1,327 `http_responses` rows carrying a `content_hash` resolved,
+through the sibling store, to the exact bytes they resolved to before.
+Running the pass a second time against the same cell wrote zero new keys
+and reported `nothing_to_do: true`.
+
+The three cells already on disk (`data/raw/2026-10-30_uk`,
+`data/raw/2026-10-30_us`, `data/raw/2026-10-30-geoprobe_uk`) hold this
+project's only real crawl data and have not had this pass run against
+them; `read_main_document_html` reads their flat layout directly; one was
+spot-checked read-only against a scratch copy (603 distinct
+`content_hash` values, all present as flat keys, all resolved) to
+confirm the fallback path holds on real, not just archived, data.
+Compaction is additive and does not touch the original, but running it
+against this project's only real corpus is a decision left to whoever
+next needs the disk space, not one this pass makes for them.
 
 ## Replicates
 
