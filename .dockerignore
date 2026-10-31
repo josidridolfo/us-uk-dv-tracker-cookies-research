@@ -1,5 +1,6 @@
-# The crawl image needs source only. Everything else is build-context weight,
-# and the credential and capture paths must never enter an image layer.
+# The crawl image needs source and the crawl stage's own list data.
+# Everything else is build-context weight, and the credential and capture
+# paths must never enter an image layer.
 .git/
 .env
 .env.*
@@ -11,11 +12,13 @@ notebooks/
 docs/
 scripts/
 # Classification lists are read by the analysis stage outside the container.
-# The Consent-O-Matic rules and CMP vendor hosts stay, since the crawl probes
-# read them in-page.
+# The Consent-O-Matic rules and CMP vendor hosts stay: autoconsent is read
+# in-page today, and these are pinned under the same provenance commit for
+# the in-page CMP probes that are not yet wired into the crawl sequence.
 tracker_lists/ddg_tracker_radar/
 tracker_lists/easyprivacy/
 tracker_lists/open_cookie_database/
+tracker_lists/public_suffix_list/
 .venv/
 venv/
 __pycache__/

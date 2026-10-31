@@ -343,6 +343,6 @@ requires-dist = [
     { name = "polars", specifier = ">=0.20" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1" },
-    { name = "tldextract", specifier = ">=5.0" },
+    { name = "tldextract", specifier = ">=5.3,<6" },
 ]
 provides-extras = ["dev"]
